@@ -72,12 +72,13 @@ test('counts prompts, builds a token timeline, and pages full activity', () => {
   try {
     f.store.ingestLogs(log('user_prompt', { 'prompt.id': 'prompt-one' }))
     f.store.ingestLogs(log('user_prompt', { 'prompt.id': 'prompt-two' }))
-    f.store.ingestLogs(log('api_request', { input_tokens: 7, output_tokens: 3, cache_read_tokens: 20 }))
+    f.store.ingestLogs(log('api_request', { 'prompt.id': 'prompt-two', input_tokens: 7, output_tokens: 3, cache_read_tokens: 20 }))
     for (let index = 0; index < 53; index++) f.store.ingestLogs(log('tool_result', { duration_ms: index }))
     const session = f.store.sessions().sessions[0]
     assert.equal(session.prompts, 2)
     assert.equal(session.apiRequests, 1)
     assert.equal(session.tokenTimeline[0].cacheRead, 20)
+    assert.equal(session.tokenTimeline[0].promptId, 'prompt-two')
     assert.equal(session.activityCount, 56)
     assert.equal(session.recentEvents.length, 12)
     const first = f.store.sessionEvents('session-1', 30)

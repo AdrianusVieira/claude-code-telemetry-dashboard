@@ -94,7 +94,7 @@ type WorkingSession = {
   cacheReadTokens: number; cacheCreationTokens: number; activeUserSeconds: number | null;
   activeCliSeconds: number | null; estimatedCostUsd: number | null; apiRequests: number;
   errors: number; prompts: number; models: Set<string>; latencies: number[]; recentEvents: Activity[];
-  tokenTimeline: { timestamp: number; input: number; output: number; cacheRead: number; cacheWrite: number }[];
+  tokenTimeline: { timestamp: number; input: number; output: number; cacheRead: number; cacheWrite: number; promptId: string }[];
   metricTokens: Record<string, number>; eventCostUsd: number; eventCostSeen: boolean
 }
 
@@ -273,6 +273,7 @@ export class Store {
         item.tokenTimeline.push({
           timestamp: row.timestamp_ms, input: row.input_tokens || 0, output: row.output_tokens || 0,
           cacheRead: row.cache_read_tokens || 0, cacheWrite: row.cache_creation_tokens || 0,
+          promptId: row.prompt_id,
         })
         if (row.duration_ms !== null) item.latencies.push(row.duration_ms)
         if (row.cost_usd !== null) {
