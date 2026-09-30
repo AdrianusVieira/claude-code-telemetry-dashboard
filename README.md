@@ -54,13 +54,23 @@ The period filter uses telemetry timestamps. A long chat can appear in multiple 
 
 The Sessions page supports selecting several projects and shows a cumulative token timeline across the selected chats and time period. Open a chat for a dedicated detail page with its own token timeline, token category percentages, prompt and API request counts, performance, and context. Recent activity starts with the newest 12 events; expand it to fetch the complete history in pages of 50, or collapse the section. The sidebar can be hidden and restored.
 
-The theme switch follows your system's light or dark setting until you choose a mode. Your choice is then saved in this browser's local storage. The visual style follows the shared design language of Mute and Cousin: compact cards, a ruled background, and a blue accent.
+The theme switch follows your system's light or dark setting until you choose a mode. Your choice is then saved in this browser's local storage. The visual style uses compact cards, a ruled background, and a blue accent.
 
 ## Chat names and privacy
 
 OTLP telemetry carries `session.id` but does **not** carry the chat title. The dashboard checks local `~/.claude/projects` transcript metadata every 30 seconds for custom chat titles and joins them by session ID. It stores only the title, session ID, and modification time from that metadata. Chat title storage is best effort because Claude Code's local transcript format can change; until a title is found, the dashboard shows a shortened session ID. Only chats with telemetry received by this dashboard appear. Existing chats are not backfilled.
 
 The receiver **does not store the incoming OTLP payload**. It stores only allowlisted numeric metrics and event fields needed for this view: timestamps, session/project IDs, email when present, model, token counts, estimated cost, request duration, event kind, tool name, and success flag. It does not store prompt text, response text, tool inputs or outputs, error messages, raw API request/response bodies, or unknown event attributes. Do not enable `OTEL_LOG_RAW_API_BODIES`, `OTEL_LOG_USER_PROMPTS`, or `OTEL_LOG_TOOL_DETAILS` for this setup; they add content to the data sent over the loopback connection even though this receiver discards it. The database still contains usage data, titles, and possibly your email, so keep the file private.
+
+## Alternative: a hosted receiver and a title hook
+
+The local receiver is one way to collect this data, not a requirement of Claude Code telemetry. You can build a hosted OTLP HTTP/JSON receiver and point Claude Code's `OTEL_EXPORTER_OTLP_ENDPOINT` at its HTTPS base URL. The receiver needs endpoints for `/v1/metrics` and `/v1/logs`, persistent storage, authentication, and the same strict field allowlist used here. In that setup, telemetry can arrive while this dashboard is closed. The data is stored on the hosted service rather than only on your computer.
+
+Chat titles need a separate path: Claude Code sends `session.id` in OTLP, but does not include the chat's displayed title. A small user-level Claude Code command hook can run at `SessionStart` and after turns, read the session ID and current title from hook input or local Claude session metadata, and POST only `{ sessionId, title }` to an authenticated title endpoint. Store titles by session ID and update the existing row when a chat is renamed. There is no title-change event to send a rename immediately; the new name appears after the next hook run. This title lookup is best effort because local metadata formats can change.
+
+The hook can be written in Node.js so the same code works on macOS and Windows. Each machine still needs Claude Code telemetry settings, the hook installation, and its own credentials. Use a dedicated ingestion credential instead of a general application API key, keep network calls short or asynchronous so Claude Code is not delayed, and never send the full transcript or raw hook input. A hosted receiver should reject oversized requests and avoid persisting prompt text, tool content, raw API bodies, or unknown fields.
+
+Claude Code's OTLP endpoint setting does not duplicate the same signal to two different OTLP receivers. To keep both a local and a hosted copy, send Claude Code to a local relay that forwards selected data, or configure an OpenTelemetry Collector with two exporters. A local relay must be running for that dual-destination setup; direct export to a hosted receiver does not require it. Neither approach automatically backfills telemetry from earlier chats.
 
 ## Verify locally
 
@@ -74,4 +84,5 @@ The tests use synthetic OTLP JSON, temporary localhost ports, and temporary data
 ## References
 
 - [Claude Code monitoring and telemetry](https://code.claude.com/docs/en/monitoring-usage)
+- [Claude Code hooks](https://code.claude.com/docs/en/hooks)
 - [OTLP specification](https://opentelemetry.io/docs/specs/otlp/)
