@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from 'react'
 import { useTheme } from './useTheme'
 
 type Event = { name: string; timestamp: number; durationMs: number | null; toolName: string; success: string }
-type TokenPoint = { timestamp: number; input: number; output: number; cacheRead: number; cacheWrite: number }
+type TokenPoint = { timestamp: number; input: number; output: number; cacheRead: number; cacheWrite: number; promptId: string }
+type TokenBar = TokenPoint & { label: string; requestCount: number; context: string }
 type Session = {
   id: string; title: string; project: string; email: string; firstSeen: number | null; lastSeen: number | null
   starts: number; prompts: number; inputTokens: number; outputTokens: number; cacheReadTokens: number
@@ -84,6 +85,76 @@ function TokenTimeline({ points }: { points: TokenPoint[] }) {
   </svg><p>Each point is an API request. The line shows cumulative tokens, including cache reads and writes.</p></div>
 }
 
+function TokenUsageBars({ points, level }: { points: TokenPoint[]; level: 'prompt' | 'request' }) {
+  const [order, setOrder] = useState<'largest' | 'time'>('largest')
+  const [page, setPage] = useState(0)
+  if (!points.length) return <p className="chart-empty">Token usage appears when API request events arrive.</p>
+
+  const promptNumbers = new Map<string, number>()
+  for (const point of points) {
+    if (point.promptId && !promptNumbers.has(point.promptId)) promptNumbers.set(point.promptId, promptNumbers.size + 1)
+  }
+  let bars: TokenBar[]
+  if (level === 'prompt') {
+    const groups = new Map<string, TokenBar>()
+    for (const point of points) {
+      const key = point.promptId || 'unlinked'
+      const existing = groups.get(key)
+      if (existing) {
+        existing.input += point.input
+        existing.output += point.output
+        existing.cacheRead += point.cacheRead
+        existing.cacheWrite += point.cacheWrite
+        existing.requestCount += 1
+      } else {
+        groups.set(key, { ...point, label: point.promptId ? `P${promptNumbers.get(point.promptId)}` : 'Other', requestCount: 1,
+          context: point.promptId ? `Prompt ${promptNumbers.get(point.promptId)}` : 'Requests without a prompt ID' })
+      }
+    }
+    bars = [...groups.values()]
+  } else {
+    bars = points.map((point, index) => ({ ...point, label: `R${index + 1}`, requestCount: 1,
+      context: point.promptId ? `Request ${index + 1} · Prompt ${promptNumbers.get(point.promptId)}` : `Request ${index + 1} · Prompt unknown` }))
+  }
+
+  const orderedBars = [...bars].sort((a, b) => order === 'largest'
+    ? pointTokens(b) - pointTokens(a) || a.timestamp - b.timestamp
+    : a.timestamp - b.timestamp)
+  const pageSize = 20
+  const pageCount = level === 'request' ? Math.ceil(orderedBars.length / pageSize) : 1
+  const currentPage = Math.min(page, pageCount - 1)
+  const visibleBars = level === 'request' ? orderedBars.slice(currentPage * pageSize, (currentPage + 1) * pageSize) : orderedBars
+  const max = Math.max(1, ...bars.map(pointTokens))
+  const total = bars.reduce((sum, bar) => sum + pointTokens(bar), 0)
+  const categories = [
+    { key: 'input', label: 'Input', color: 'input' },
+    { key: 'output', label: 'Output', color: 'output' },
+    { key: 'cacheRead', label: 'Cache read', color: 'read' },
+    { key: 'cacheWrite', label: 'Cache write', color: 'create' },
+  ] as const
+  return <div className="usage-chart">
+    <div className="usage-chart-meta"><span>{bars.length} {level === 'prompt' ? 'prompt groups' : 'API requests'} · {count(total)} tokens</span><label>Order <select value={order} onChange={(event) => { setOrder(event.target.value as 'largest' | 'time'); setPage(0) }}><option value="largest">Most tokens first</option><option value="time">Time order</option></select></label></div>
+    <div className="usage-chart-scroll" role="region" aria-label={`Tokens by ${level === 'prompt' ? 'prompt' : 'API request'}`} tabIndex={0}>
+      <div className="usage-bars" style={{ minWidth: `${Math.max(560, visibleBars.length * (level === 'prompt' ? 74 : 58))}px`, gridTemplateColumns: `repeat(${visibleBars.length}, minmax(0, 1fr))` }}>
+        {visibleBars.map((bar) => {
+          const value = pointTokens(bar)
+          const detail = `${bar.context} · ${date(bar.timestamp)}\n${count(value)} tokens · ${bar.requestCount} ${bar.requestCount === 1 ? 'request' : 'requests'}\nInput ${count(bar.input)} · Output ${count(bar.output)}\nCache read ${count(bar.cacheRead)} · Cache write ${count(bar.cacheWrite)}`
+          return <div className="usage-column" role="img" tabIndex={0} key={bar.label} title={detail} aria-label={detail}>
+            <span className="usage-value">{shortCount(value)}</span>
+            <span className="usage-plot"><span className="usage-stack" style={{ height: `${value ? Math.max(2, value / max * 100) : 0}%` }}>
+              {categories.map((category) => <span key={category.key} className={`usage-segment ${category.color}`} style={{ height: `${value ? bar[category.key] / value * 100 : 0}%` }} />)}
+            </span></span>
+            <span className="usage-index">{bar.label}</span><span className="usage-time">{time(bar.timestamp)}</span>
+          </div>
+        })}
+      </div>
+    </div>
+    {level === 'request' && pageCount > 1 && <div className="usage-page-controls"><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>← Previous</button><span>{currentPage * pageSize + 1}–{Math.min((currentPage + 1) * pageSize, bars.length)} of {bars.length} requests</span><button type="button" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>Next →</button></div>}
+    <div className="usage-legend" aria-label="Token categories">{categories.map((category) => <span key={category.key}><i className={`key ${category.color}`} />{category.label}</span>)}</div>
+    <p>{level === 'prompt' ? 'Each bar totals the API requests triggered by one prompt. “Other” contains requests without a prompt ID.' : 'Each bar is one API request. Hover or focus a bar for its exact token counts and prompt group.'} Cache reads may repeat context across requests.</p>
+  </div>
+}
+
 function ActivityList({ events }: { events: Event[] }) {
   return <ol className="event-list">{events.length ? events.map((event, index) => <li className="event-item" key={`${event.timestamp}-${index}`}><span className="event-dot" /><span className="event-label">{eventLabels[event.name] || event.name}{event.toolName && event.name === 'tool_result' ? ` · ${event.toolName}` : ''}</span><time className="event-time">{date(event.timestamp)}</time></li>) : <li className="event-empty">No log events received yet.</li>}</ol>
 }
@@ -133,6 +204,8 @@ function SessionDetail({ session, period, onBack }: { session: Session; period: 
     <div className="detail-page-head"><div><p className="eyebrow">SESSION DETAILS</p><h1 className="detail-title">{session.title}</h1><div className="detail-meta"><span className="project-pill">{session.project}</span><span>{session.id}</span></div></div></div>
     <div className="detail-hero"><Stat label="Tokens used" value={count(tokens(session))} hint="Includes cache" /><Stat label="Estimated cost" value={session.estimatedCostUsd == null ? 'Unavailable' : `$${session.estimatedCostUsd.toFixed(session.estimatedCostUsd < 0.01 ? 4 : 2)}`} hint="Claude Code estimate" /><Stat label="Prompts sent" value={count(session.prompts)} hint="User prompt events" /><Stat label="API requests" value={count(session.apiRequests)} hint="Calls to Claude" /></div>
     <section className="panel chart-panel"><div className="panel-head"><div><p className="eyebrow">USAGE OVER TIME</p><h2>Token timeline</h2></div><span className="count-chip">{session.apiRequests} API requests</span></div><div className="chart-body"><TokenTimeline points={session.tokenTimeline} /></div></section>
+    <section className="panel chart-panel detail-chart"><div className="panel-head"><div><p className="eyebrow">TOKEN COMPARISON</p><h2>By prompt</h2></div><span className="count-chip">Grouped API requests</span></div><div className="chart-body"><TokenUsageBars points={session.tokenTimeline} level="prompt" /></div></section>
+    <section className="panel chart-panel detail-chart"><div className="panel-head"><div><p className="eyebrow">TOKEN COMPARISON</p><h2>By API request</h2></div><span className="count-chip">{session.apiRequests} API requests</span></div><div className="chart-body"><TokenUsageBars points={session.tokenTimeline} level="request" /></div></section>
     <div className="detail-grid"><section className="panel detail-card"><TokenBreakdown session={session} /><div className="detail-section"><h3>Performance</h3><div className="info-grid">{performance.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></div></section>
       <section className="panel detail-card"><h3>Context</h3><dl className="context-list">{context.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section></div>
     <section className="panel activity-panel"><details open><summary><span>Recent activity</span><span className="count-chip">{session.activityCount} events</span></summary><div className="activity-body"><ActivityList events={showAll ? allEvents : session.recentEvents} />
