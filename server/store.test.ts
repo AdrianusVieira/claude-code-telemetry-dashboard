@@ -40,14 +40,12 @@ function fixture() {
 test('aggregates metrics and events by chat without counting duplicate exports', () => {
   const f = fixture()
   try {
-    const start = metric('claude_code.session.count', 1, 'fresh')
-    assert.equal(f.store.ingestMetrics(start), 1)
-    assert.equal(f.store.ingestMetrics(start), 0)
-    f.store.ingestMetrics(metric('claude_code.token.usage', 12, 'input'))
+    const tokenMetric = metric('claude_code.token.usage', 12, 'input')
+    assert.equal(f.store.ingestMetrics(tokenMetric), 1)
+    assert.equal(f.store.ingestMetrics(tokenMetric), 0)
     f.store.ingestMetrics(metric('claude_code.active_time.total', 24, 'cli'))
     f.store.ingestLogs(log('api_request', { input_tokens: 12, output_tokens: 3, duration_ms: 800, cost_usd: 0.02 }))
     const result = f.store.sessions().sessions[0]
-    assert.equal(result.starts, 1)
     assert.equal(result.inputTokens, 12)
     assert.equal(result.outputTokens, 3)
     assert.equal(result.activeCliSeconds, 24)
@@ -157,15 +155,42 @@ test('migrates an existing events table to add sanitized prompt storage', () => 
   } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
 })
 
-test('skip cumulative metrics and agents view launches', () => {
+test('skip cumulative metrics and session start metrics', () => {
   const f = fixture()
   try {
-    const cumulative = metric('claude_code.session.count', 3)
+    const cumulative = metric('claude_code.token.usage', 3, 'input')
     cumulative.resourceMetrics[0].scopeMetrics[0].metrics[0].sum.aggregationTemporality = 2
     assert.equal(f.store.ingestMetrics(cumulative), 0)
-    f.store.ingestMetrics(metric('claude_code.session.count', 1, 'agents_view'))
+    assert.equal(f.store.ingestMetrics(metric('claude_code.session.count', 1, 'fresh')), 0)
+    assert.equal(f.store.ingestMetrics(metric('claude_code.session.count', 1, 'agents_view')), 0)
     assert.equal(f.store.sessions().sessions.length, 0)
   } finally { f.close() }
+})
+
+test('removes previously stored session start metrics', () => {
+  const f = fixture()
+  try {
+    const db = new Database(f.dbPath)
+    try {
+      const insert = db.prepare(`INSERT INTO metric_points
+        (id, timestamp_ms, name, session_id, project, user_email, kind, model, value)
+        VALUES (?, ?, ?, ?, 'project-a', '', '', '', 1)`)
+      insert.run('old-start', Date.now(), 'claude_code.session.count', 'start-only')
+      insert.run('old-token', Date.now(), 'claude_code.token.usage', 'other-session')
+    } finally { db.close() }
+    assert.deepEqual(f.store.sessions().sessions.map((session) => session.id), ['other-session'])
+    f.store.close()
+    const reopened = new Store(f.dbPath)
+    try {
+      const data = reopened.sessions()
+      assert.deepEqual(data.sessions.map((session) => session.id), ['other-session'])
+      assert.equal('sessionStarts' in data, false)
+      assert.equal('starts' in data.sessions[0], false)
+      const db = new Database(f.dbPath, { readonly: true })
+      try { assert.equal((db.prepare("SELECT COUNT(*) AS count FROM metric_points WHERE name = 'claude_code.session.count'").get() as { count: number }).count, 0) }
+      finally { db.close() }
+    } finally { reopened.close() }
+  } finally { rmSync(f.dir, { recursive: true, force: true }) }
 })
 
 test('read a custom chat title from local transcript metadata', async () => {
@@ -174,7 +199,7 @@ test('read a custom chat title from local transcript metadata', async () => {
     const projectDir = join(f.dir, '.claude', 'projects', 'project-a')
     mkdirSync(projectDir, { recursive: true })
     writeFileSync(join(projectDir, 'session-1.jsonl'), `${JSON.stringify({ type: 'custom-title', customTitle: 'Ticket X', sessionId: 'session-1' })}\n`)
-    f.store.ingestMetrics(metric('claude_code.session.count', 1))
+    f.store.ingestMetrics(metric('claude_code.token.usage', 1, 'input'))
     await new TitleScanner(f.store, join(f.dir, '.claude')).scan()
     assert.equal(f.store.sessions().sessions[0].title, 'Ticket X')
   } finally { f.close() }

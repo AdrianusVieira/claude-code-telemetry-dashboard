@@ -8,7 +8,7 @@ type ObjectValue = Record<string, unknown>
 type Scalar = string | number | boolean
 
 const METRICS = new Set([
-  'claude_code.session.count', 'claude_code.token.usage',
+  'claude_code.token.usage',
   'claude_code.active_time.total', 'claude_code.cost.usage',
 ])
 const EVENTS = new Set([
@@ -92,7 +92,7 @@ type EventRow = {
 type Activity = { name: string; timestamp: number; durationMs: number | null; toolName: string; success: string }
 type WorkingSession = {
   id: string; title: string; project: string; email: string; firstSeen: number | null;
-  lastSeen: number | null; starts: number; inputTokens: number; outputTokens: number;
+  lastSeen: number | null; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheCreationTokens: number; activeUserSeconds: number | null;
   activeCliSeconds: number | null; estimatedCostUsd: number | null; apiRequests: number;
   errors: number; prompts: number; models: Set<string>; latencies: number[]; recentEvents: Activity[];
@@ -137,6 +137,7 @@ export class Store {
     if (!(this.db.pragma('table_info(events)') as { name: string }[]).some((column) => column.name === 'prompt_text')) {
       this.db.exec('ALTER TABLE events ADD COLUMN prompt_text TEXT')
     }
+    this.db.prepare("DELETE FROM metric_points WHERE name = 'claude_code.session.count'").run()
   }
 
   close(): void { this.db.close() }
@@ -227,7 +228,7 @@ export class Store {
 
   sessions(days: number | null = 30) {
     const cutoff = days === null ? 0 : Date.now() - days * 86_400_000
-    const metrics = this.db.prepare('SELECT * FROM metric_points WHERE timestamp_ms >= ?').all(cutoff) as MetricRow[]
+    const metrics = this.db.prepare("SELECT * FROM metric_points WHERE timestamp_ms >= ? AND name != 'claude_code.session.count'").all(cutoff) as MetricRow[]
     const events = this.db.prepare('SELECT * FROM events WHERE timestamp_ms >= ?').all(cutoff) as EventRow[]
     const titles = new Map((this.db.prepare('SELECT session_id, title FROM titles').all() as { session_id: string; title: string }[]).map((row) => [row.session_id, row.title]))
     const sessions = new Map<string, WorkingSession>()
@@ -237,7 +238,7 @@ export class Store {
       if (!item) {
         item = {
           id: sessionId, title: titles.get(sessionId) || `Session ${sessionId.slice(0, 8)}`,
-          project: 'Unknown', email: '', firstSeen: null, lastSeen: null, starts: 0,
+          project: 'Unknown', email: '', firstSeen: null, lastSeen: null,
           inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
           activeUserSeconds: null, activeCliSeconds: null, estimatedCostUsd: null,
           apiRequests: 0, errors: 0, prompts: 0, models: new Set(), latencies: [], recentEvents: [], tokenTimeline: [],
@@ -257,11 +258,9 @@ export class Store {
     }
 
     for (const row of metrics) {
-      if (row.name === 'claude_code.session.count' && row.kind === 'agents_view') continue
       const item = get(row.session_id)
       stamp(item, row)
-      if (row.name === 'claude_code.session.count') item.starts += row.value
-      else if (row.name === 'claude_code.token.usage') {
+      if (row.name === 'claude_code.token.usage') {
         const field = ({ input: 'inputTokens', output: 'outputTokens', cacheRead: 'cacheReadTokens', cacheCreation: 'cacheCreationTokens' } as const)[row.kind as 'input' | 'output' | 'cacheRead' | 'cacheCreation']
         if (field) item.metricTokens[field] = (item.metricTokens[field] || 0) + row.value
       } else if (row.name === 'claude_code.active_time.total') {
@@ -306,13 +305,13 @@ export class Store {
       if (item.estimatedCostUsd === null && item.eventCostSeen) item.estimatedCostUsd = item.eventCostUsd
       const { metricTokens: _metricTokens, eventCostUsd: _eventCostUsd, eventCostSeen: _eventCostSeen, latencies, models, ...visible } = item
       return {
-        ...visible, starts: Math.trunc(item.starts), models: [...models].sort(),
+        ...visible, models: [...models].sort(),
         medianRequestMs: median(latencies), activityCount: item.recentEvents.length,
         recentEvents: item.recentEvents.sort((a, b) => b.timestamp - a.timestamp).slice(0, 12),
         tokenTimeline: item.tokenTimeline.sort((a, b) => a.timestamp - b.timestamp),
       }
     }).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
-    return { periodDays: days, sessions: output, sessionStarts: output.reduce((total, item) => total + item.starts, 0) }
+    return { periodDays: days, sessions: output }
   }
 
   sessionEvents(sessionId: string, days: number | null, offset = 0, limit = 50) {

@@ -15,7 +15,7 @@ npm start
 
 Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The OTLP receiver listens on `http://127.0.0.1:4318` at `/v1/metrics` and `/v1/logs`. Both listeners bind only to loopback. The SQLite database is created at `data/telemetry.sqlite3` and is ignored by Git.
 
-`npm start` builds the React UI, then starts both local listeners. The same SQLite database path (`data/telemetry.sqlite3`) works with the earlier Python prototype, so existing local data is preserved. To change a port or path after building, use `npm run server -- --dashboard-port 3001 --otlp-port 4319 --db data/telemetry.sqlite3`. Use `--claude-dir` to point chat title discovery at another Claude data directory.
+`npm start` builds the React UI, then starts both local listeners. The same SQLite database path (`data/telemetry.sqlite3`) works with the earlier Python prototype; existing local data is preserved except for old `claude_code.session.count` rows, which are removed when the receiver starts. Future session count metrics are ignored. To change a port or path after building, use `npm run server -- --dashboard-port 3001 --otlp-port 4319 --db data/telemetry.sqlite3`. Use `--claude-dir` to point chat title discovery at another Claude data directory.
 
 For development, run `npm run dev` and open `http://127.0.0.1:5173`. This starts Vite and the TypeScript receiver together. Vite proxies `/api` to the local receiver. After UI edits, `npm start` rebuilds the page served on port 3000.
 
@@ -53,7 +53,6 @@ The OTLP receiver supports HTTP/JSON only. If Claude Code is set to `grpc` or `h
 | Field | Meaning |
 | --- | --- |
 | Chats | Distinct `session.id` values in the selected period. |
-| Session starts | Sum of `claude_code.session.count` in the period, including resumes and continues. `agents_view` launches are excluded. |
 | Tokens | Input, output, cache read, and cache creation tokens. API request events supply the breakdown when available; otherwise token metrics do. |
 | Active time | `claude_code.active_time.total` for user interaction and CLI processing. Idle time is excluded. “Unavailable” means Claude Code has not sent that metric. |
 | Median request time | Median `duration_ms` of `api_request` events in this chat and period. This is API request wall time, not tokens per second. |
