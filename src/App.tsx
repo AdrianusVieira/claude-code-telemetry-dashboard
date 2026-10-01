@@ -7,7 +7,7 @@ type TokenBar = TokenPoint & { label: string; requestCount: number; context: str
 type PromptRecord = { id: string; timestamp: number; text: string | null; requests: number; tokens: number; costUsd: number | null }
 type Session = {
   id: string; title: string; project: string; email: string; firstSeen: number | null; lastSeen: number | null
-  starts: number; prompts: number; inputTokens: number; outputTokens: number; cacheReadTokens: number
+  prompts: number; inputTokens: number; outputTokens: number; cacheReadTokens: number
   cacheCreationTokens: number; activeUserSeconds: number | null; activeCliSeconds: number | null
   estimatedCostUsd: number | null; apiRequests: number; errors: number; models: string[]
   medianRequestMs: number | null; activityCount: number; recentEvents: Event[]; tokenTimeline: TokenPoint[]
@@ -41,7 +41,7 @@ function ProjectPicker({ projects, selected, onChange }: { projects: string[]; s
 function ChatRow({ session, maxTokens, onClick }: { session: Session; maxTokens: number; onClick: () => void }) {
   return <button className="session-row" type="button" onClick={onClick}>
     <div className="row-top"><strong className="row-title">{session.title}</strong><span className="row-time">{date(session.lastSeen)}</span></div>
-    <div className="row-meta"><span className="project-pill">{session.project}</span><span>{session.prompts} prompts</span><span>{session.apiRequests} API requests</span><span>{session.starts} starts</span></div>
+    <div className="row-meta"><span className="project-pill">{session.project}</span><span>{session.prompts} prompts</span><span>{session.apiRequests} API requests</span></div>
     <div className="row-bottom"><span>{shortCount(tokens(session))} tokens</span><span className="mini-track"><span className="mini-fill" style={{ width: `${Math.max(2, tokens(session) / maxTokens * 100)}%` }} /></span><span aria-hidden="true">→</span></div>
   </button>
 }
@@ -232,7 +232,7 @@ function SessionDetail({ session, period, onBack }: { session: Session; period: 
     ['Prompts sent', count(session.prompts)], ['API requests', count(session.apiRequests)],
     ['Median request time', session.medianRequestMs == null ? 'Unavailable' : `${Math.round(session.medianRequestMs)} ms`],
     ['Active user time', duration(session.activeUserSeconds)], ['Active CLI time', duration(session.activeCliSeconds)],
-    ['API errors', count(session.errors)], ['Session starts', count(session.starts)],
+    ['API errors', count(session.errors)],
   ]
   const context = [
     ['Models', session.models.join(', ') || 'Unavailable'], ['Account email', session.email || 'Unavailable'],
@@ -313,13 +313,13 @@ export default function App() {
           <ProjectPicker projects={projects} selected={selectedProjects} onChange={setSelectedProjects} />
           <label>Period <select value={period} onChange={(e) => setPeriod(e.target.value as Period)}><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="all">All time</option></select></label>
         </div></div>
-        <section className="stats" aria-label="Summary"><Stat label="Chats" value={count(filtered.length)} hint="Distinct session IDs" /><Stat label="Prompts sent" value={count(filtered.reduce((sum, s) => sum + s.prompts, 0))} hint="User prompt events" /><Stat label="Session starts" value={count(filtered.reduce((sum, s) => sum + s.starts, 0))} hint="Includes resumes" /><Stat label="Tokens" value={shortCount(filtered.reduce((sum, s) => sum + tokens(s), 0))} hint="Input, output, and cache" /><Stat label="Active time" value={active} hint="User + Claude processing" /></section>
+        <section className="stats" aria-label="Summary"><Stat label="Chats" value={count(filtered.length)} hint="Distinct session IDs" /><Stat label="Prompts sent" value={count(filtered.reduce((sum, s) => sum + s.prompts, 0))} hint="User prompt events" /><Stat label="Tokens" value={shortCount(filtered.reduce((sum, s) => sum + tokens(s), 0))} hint="Input, output, and cache" /><Stat label="Active time" value={active} hint="User + Claude processing" /></section>
         <section className="panel chart-panel overview-chart" aria-labelledby="overview-chart-heading"><div className="panel-head"><div><p className="eyebrow">USAGE OVER TIME</p><h2 id="overview-chart-heading">Token timeline</h2></div><span className="count-chip">{overviewPoints.length} API requests across {filtered.length} {filtered.length === 1 ? 'chat' : 'chats'}</span></div><div className="chart-body"><TokenTimeline points={overviewPoints} /></div></section>
         <section className="panel sessions-panel" aria-labelledby="chats-heading"><div className="panel-head"><div><p className="eyebrow">ACTIVITY</p><h2 id="chats-heading">Chats</h2></div><span className="count-chip">{filtered.length} {filtered.length === 1 ? 'chat' : 'chats'}</span></div>
           {filtered.length ? <div className="session-list">{filtered.map((session) => <ChatRow key={session.id} session={session} maxTokens={maxTokens} onClick={() => navigate(session.id)} />)}</div> : <div className="empty-state"><span className="empty-icon" aria-hidden="true">↗</span><h3>No chats in this view</h3><p>Try another project or period, or send a prompt from a new Claude Code chat.</p></div>}
         </section>
       </>}
-      <footer className="footnote"><span>Session starts count launches; chats count distinct IDs. Cost is Claude Code's estimate.</span><span>Created by @AdrianusVieira</span></footer>
+      <footer className="footnote"><span>Chats count distinct IDs. Cost is Claude Code's estimate.</span><span>Created by @AdrianusVieira</span></footer>
     </div></main>
   </div>
 }

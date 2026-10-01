@@ -24,16 +24,27 @@ test('OTLP HTTP/JSON reaches SQLite and the dashboard API', async () => {
     const timestamp = String(Date.now() * 1_000_000)
     const payload = { resourceMetrics: [{
       resource: { attributes: [{ key: 'project.id', value: { stringValue: 'pilot' } }] },
-      scopeMetrics: [{ metrics: [{ name: 'claude_code.session.count', sum: { aggregationTemporality: 1, dataPoints: [{
-        timeUnixNano: timestamp, asInt: '1', attributes: [{ key: 'session.id', value: { stringValue: 'pilot-chat' } }],
-      }] } }] }],
+      scopeMetrics: [{ metrics: [
+        { name: 'claude_code.session.count', sum: { aggregationTemporality: 1, dataPoints: [{
+          timeUnixNano: timestamp, asInt: '1', attributes: [{ key: 'session.id', value: { stringValue: 'start-only' } }],
+        }] } },
+        { name: 'claude_code.token.usage', sum: { aggregationTemporality: 1, dataPoints: [{
+          timeUnixNano: timestamp, asInt: '12', attributes: [
+            { key: 'session.id', value: { stringValue: 'pilot-chat' } },
+            { key: 'type', value: { stringValue: 'input' } },
+          ],
+        }] } },
+      ] }],
     }] }
     const posted = await fetch(`http://127.0.0.1:${otlpPort}/v1/metrics`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
     assert.equal(posted.status, 200)
     const response = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?days=30`)
-    const data = await response.json() as { sessions: { project: string; starts: number }[] }
+    const data = await response.json() as { sessions: { project: string; inputTokens: number }[] }
+    assert.equal(data.sessions.length, 1)
     assert.equal(data.sessions[0].project, 'pilot')
-    assert.equal(data.sessions[0].starts, 1)
+    assert.equal(data.sessions[0].inputTokens, 12)
+    assert.equal('starts' in data.sessions[0], false)
+    assert.equal('sessionStarts' in data, false)
     const page = await fetch(`http://127.0.0.1:${dashboardPort}/`)
     assert.equal(page.status, 200)
     assert.match(await page.text(), /Claude Code telemetry/)
