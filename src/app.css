@@ -258,6 +258,16 @@ h3 { margin: 0 0 12px; font-size: 12px; letter-spacing: 0.12em; text-transform: 
 .usage-legend { flex-wrap: wrap; gap: 6px 15px; margin-top: 11px; font-family: var(--font-sans); }
 .usage-legend span { display: flex; align-items: center; gap: 5px; }
 .usage-chart p { margin: 9px 0 0; color: var(--color-text-muted); font-size: 11px; line-height: 1.5; }
+.prompt-panel { min-height: 0; }
+.prompt-body { padding: 14px 18px 18px; }
+.prompt-list { margin: 0; padding: 0; list-style: none; border-top: 1px solid var(--color-border); }
+.prompt-item { padding: 12px 0; border-bottom: 1px solid var(--color-border); }
+.prompt-meta { display: flex; flex-wrap: wrap; gap: 6px 16px; margin-bottom: 8px; color: var(--color-text-muted); font: 11px var(--font-mono); }
+.prompt-meta strong { margin-left: auto; color: var(--color-text); }
+.prompt-item summary { cursor: pointer; overflow-wrap: anywhere; line-height: 1.5; }
+.prompt-item summary:focus-visible { outline: 2px solid var(--color-accent); }
+.prompt-item pre { margin: 10px 0 0; padding: 12px; overflow-wrap: anywhere; white-space: pre-wrap; font: 11px/1.5 var(--font-mono); background: var(--color-bg); border: 1px solid var(--color-border); }
+.prompt-note { margin: 12px 0 0; color: var(--color-text-muted); font-size: 11px; line-height: 1.5; }
 @media (max-width: 600px) { .usage-chart-meta { align-items: flex-start; flex-direction: column; gap: 7px; } }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin-top: 15px; }
 .detail-card { padding: 19px; overflow: visible; }

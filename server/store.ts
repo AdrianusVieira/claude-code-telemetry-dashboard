@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 import { mkdirSync } from 'node:fs'
 import { dirname } from 'node:path'
 import Database from 'better-sqlite3'
+import { sanitizePrompt } from './sanitize.js'
 
 type ObjectValue = Record<string, unknown>
 type Scalar = string | number | boolean
@@ -85,7 +86,8 @@ type EventRow = {
   user_email: string; model: string; duration_ms: number | null;
   input_tokens: number | null; output_tokens: number | null;
   cache_read_tokens: number | null; cache_creation_tokens: number | null;
-  cost_usd: number | null; tool_name: string; success: string; prompt_id: string
+  cost_usd: number | null; tool_name: string; success: string; prompt_id: string;
+  prompt_text: string | null
 }
 type Activity = { name: string; timestamp: number; durationMs: number | null; toolName: string; success: string }
 type WorkingSession = {
@@ -124,7 +126,7 @@ export class Store {
         session_id TEXT NOT NULL, project TEXT NOT NULL, user_email TEXT NOT NULL,
         model TEXT NOT NULL, duration_ms REAL, input_tokens INTEGER, output_tokens INTEGER,
         cache_read_tokens INTEGER, cache_creation_tokens INTEGER, cost_usd REAL,
-        tool_name TEXT, success TEXT, prompt_id TEXT
+        tool_name TEXT, success TEXT, prompt_id TEXT, prompt_text TEXT
       );
       CREATE INDEX IF NOT EXISTS event_session_time ON events(session_id, timestamp_ms);
       CREATE TABLE IF NOT EXISTS titles (
@@ -132,6 +134,9 @@ export class Store {
         updated_ms INTEGER NOT NULL
       );
     `)
+    if (!(this.db.pragma('table_info(events)') as { name: string }[]).some((column) => column.name === 'prompt_text')) {
+      this.db.exec('ALTER TABLE events ADD COLUMN prompt_text TEXT')
+    }
   }
 
   close(): void { this.db.close() }
@@ -183,8 +188,12 @@ export class Store {
           if (!EVENTS.has(name)) continue
           const { sessionId, project, email } = identity(attrs)
           if (!sessionId) continue
-          rows.push({
-            id: fingerprint('event', [resource, record]),
+          let promptText: string | null = null
+          if (name === 'user_prompt') {
+            try { promptText = sanitizePrompt(attrs.prompt) }
+            catch { /* Keep the event count, but never persist text on sanitizer failure. */ }
+          }
+          const row = {
             timestamp_ms: millis(record.timeUnixNano), name, session_id: sessionId,
             project, user_email: email, model: String(attrs.model || ''),
             duration_ms: numeric(attrs.duration_ms), input_tokens: integer(attrs.input_tokens),
@@ -192,17 +201,19 @@ export class Store {
             cache_creation_tokens: integer(attrs.cache_creation_tokens), cost_usd: numeric(attrs.cost_usd),
             tool_name: String(attrs.tool_name || ''), success: String(attrs.success || ''),
             prompt_id: String(attrs['prompt.id'] || ''),
-          })
+            prompt_text: promptText,
+          }
+          rows.push({ ...row, id: fingerprint('event', [row, attrs['event.sequence'], attrs['message.uuid']]) })
         }
       }
     }
     const statement = this.db.prepare(`INSERT OR IGNORE INTO events
       (id, timestamp_ms, name, session_id, project, user_email, model, duration_ms,
        input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd,
-       tool_name, success, prompt_id)
+       tool_name, success, prompt_id, prompt_text)
       VALUES (@id, @timestamp_ms, @name, @session_id, @project, @user_email, @model,
        @duration_ms, @input_tokens, @output_tokens, @cache_read_tokens,
-       @cache_creation_tokens, @cost_usd, @tool_name, @success, @prompt_id)`)
+       @cache_creation_tokens, @cost_usd, @tool_name, @success, @prompt_id, @prompt_text)`)
     return this.db.transaction(() => rows.reduce((total, row) => total + statement.run(row).changes, 0))()
   }
 
@@ -311,5 +322,39 @@ export class Store {
       WHERE session_id = ? AND timestamp_ms >= ? ORDER BY timestamp_ms DESC, rowid DESC LIMIT ? OFFSET ?`)
       .all(sessionId, cutoff, limit, offset) as Pick<EventRow, 'name' | 'timestamp_ms' | 'duration_ms' | 'tool_name' | 'success'>[]
     return { total, events: rows.map((row) => ({ name: row.name, timestamp: row.timestamp_ms, durationMs: row.duration_ms, toolName: row.tool_name, success: row.success })) }
+  }
+
+  sessionPrompts(sessionId: string, days: number | null) {
+    const cutoff = days === null ? 0 : Date.now() - days * 86_400_000
+    const rows = this.db.prepare(`SELECT id, name, timestamp_ms, prompt_id, prompt_text,
+      input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
+      FROM events WHERE session_id = ? AND timestamp_ms >= ? AND name IN ('user_prompt', 'api_request')
+      ORDER BY timestamp_ms, rowid`).all(sessionId, cutoff) as EventRow[]
+    const prompts = new Map<string, {
+      id: string; timestamp: number; text: string | null; requests: number; tokens: number;
+      costUsd: number | null
+    }>()
+    const missingCost = new Set<string>()
+    for (const row of rows) {
+      if (row.name !== 'user_prompt') continue
+      const key = row.prompt_id || row.id
+      prompts.set(key, { id: key, timestamp: row.timestamp_ms, text: row.prompt_text,
+        requests: 0, tokens: 0, costUsd: null })
+    }
+    for (const row of rows) {
+      if (row.name !== 'api_request' || !row.prompt_id) continue
+      const prompt = prompts.get(row.prompt_id)
+      if (!prompt) continue
+      prompt.requests += 1
+      prompt.tokens += (row.input_tokens || 0) + (row.output_tokens || 0) +
+        (row.cache_read_tokens || 0) + (row.cache_creation_tokens || 0)
+      if (row.cost_usd === null) missingCost.add(row.prompt_id)
+      else if (!missingCost.has(row.prompt_id)) prompt.costUsd = (prompt.costUsd || 0) + row.cost_usd
+    }
+    for (const id of missingCost) {
+      const prompt = prompts.get(id)
+      if (prompt) prompt.costUsd = null
+    }
+    return [...prompts.values()].sort((a, b) => b.timestamp - a.timestamp)
   }
 }
