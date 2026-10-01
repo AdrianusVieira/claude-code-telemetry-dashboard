@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { mkdtempSync, rmSync } from 'node:fs'
-import { type Server } from 'node:http'
+import { request as httpRequest, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -39,6 +39,31 @@ test('OTLP HTTP/JSON reaches SQLite and the dashboard API', async () => {
     assert.match(await page.text(), /Claude Code telemetry/)
     const invalid = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?days=banana`)
     assert.equal(invalid.status, 400)
+    const secret = 'sensitive-local-value'
+    const logPayload = { resourceLogs: [{ resource: { attributes: [] }, scopeLogs: [{ logRecords: [{
+      timeUnixNano: timestamp, attributes: [
+        { key: 'event.name', value: { stringValue: 'user_prompt' } },
+        { key: 'session.id', value: { stringValue: 'pilot-chat' } },
+        { key: 'prompt.id', value: { stringValue: 'prompt-1' } },
+        { key: 'prompt', value: { stringValue: `Investigate latency. API_KEY=${secret}` } },
+      ],
+    }] }] }] }
+    const logPosted = await fetch(`http://127.0.0.1:${otlpPort}/v1/logs`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(logPayload) })
+    assert.equal(logPosted.status, 200)
+    const prompts = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions/pilot-chat/prompts?days=30`)
+    assert.equal(prompts.status, 200)
+    const promptBody = await prompts.text()
+    assert.match(promptBody, /Investigate latency/)
+    assert.doesNotMatch(promptBody, /sensitive-local-value/)
+    const rebindingStatus = await new Promise<number>((resolve, reject) => {
+      const request = httpRequest({ hostname: '127.0.0.1', port: dashboardPort, path: '/api/sessions/pilot-chat/prompts', headers: { Host: 'attacker.example' } }, (response) => {
+        response.resume()
+        response.on('end', () => resolve(response.statusCode || 0))
+      })
+      request.on('error', reject)
+      request.end()
+    })
+    assert.equal(rebindingStatus, 403)
   } finally {
     await Promise.all([close(otlp), close(dashboard)])
     store.close()

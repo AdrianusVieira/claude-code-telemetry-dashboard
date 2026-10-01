@@ -37,6 +37,15 @@ Replace `my-project` with your project's name. For each additional project, laun
 
 Send a prompt. Logs usually export within 5 seconds; metrics default to a 60 second interval. If no data arrives, run `claude --debug-file /tmp/claude-otel-debug.log` and look for `[3P telemetry]` exporter errors. Claude Code does not accept OTLP exporter settings from a project's `.claude/settings.json`; use the shell, managed settings, or your user-level `~/.claude/settings.json`. For a first test, the terminal CLI makes the environment easiest to verify. An editor extension may need its own startup environment or user-level settings.
 
+To show sanitized prompt text alongside the API request tokens and estimated cost it triggered, enable prompt content **only for the local receiver**, before launching Claude Code:
+
+```sh
+export OTEL_LOG_USER_PROMPTS=1
+export OTEL_LOG_ASSISTANT_RESPONSES=0
+```
+
+The dashboard never backfills earlier prompt text. It links each `user_prompt` event to API requests through `prompt.id`. Costs shown per prompt are the sum of the linked API request estimates when all those requests include a cost; they can differ from session cost metrics. Leave raw API bodies, tool content, and tool details disabled. Do not point a content-enabled OTLP exporter directly at a hosted endpoint: the raw prompt reaches that endpoint before this dashboard can sanitize it.
+
 The OTLP receiver supports HTTP/JSON only. If Claude Code is set to `grpc` or `http/protobuf`, switch it to `http/json` for this dashboard.
 
 ## What the dashboard means
@@ -60,7 +69,7 @@ The theme switch follows your system's light or dark setting until you choose a 
 
 OTLP telemetry carries `session.id` but does **not** carry the chat title. The dashboard checks local `~/.claude/projects` transcript metadata every 30 seconds for custom chat titles and joins them by session ID. It stores only the title, session ID, and modification time from that metadata. Chat title storage is best effort because Claude Code's local transcript format can change; until a title is found, the dashboard shows a shortened session ID. Only chats with telemetry received by this dashboard appear. Existing chats are not backfilled.
 
-The receiver **does not store the incoming OTLP payload**. It stores only allowlisted numeric metrics and event fields needed for this view: timestamps, session/project IDs, email when present, model, token counts, estimated cost, request duration, event kind, tool name, and success flag. It does not store prompt text, response text, tool inputs or outputs, error messages, raw API request/response bodies, or unknown event attributes. Do not enable `OTEL_LOG_RAW_API_BODIES`, `OTEL_LOG_USER_PROMPTS`, or `OTEL_LOG_TOOL_DETAILS` for this setup; they add content to the data sent over the loopback connection even though this receiver discards it. The database still contains usage data, titles, and possibly your email, so keep the file private.
+The receiver **does not store the incoming OTLP payload**. It stores only allowlisted numeric metrics and event fields needed for this view: timestamps, session/project IDs, email when present, model, token counts, estimated cost, request duration, event kind, tool name, success flag, and sanitized user prompt text when enabled. It does not store response text, tool inputs or outputs, error messages, raw API request/response bodies, or unknown event attributes. The built-in sanitizer masks common credentials, assignment values, long opaque strings, email addresses, and common Brazilian personal identifiers; it omits prompts longer than 16,000 characters and saves no text if sanitization fails. Automated detection cannot guarantee that every sensitive value is caught. Keep `OTEL_LOG_RAW_API_BODIES` and `OTEL_LOG_TOOL_DETAILS` disabled. The database contains usage data, titles, possibly your email, and sanitized prompts, so keep the file private.
 
 ## Alternative: a hosted receiver and a title hook
 

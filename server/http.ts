@@ -12,6 +12,7 @@ function json(response: ServerResponse, data: unknown, status = 200): void {
     'Content-Length': Buffer.byteLength(body),
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
   })
   response.end(body)
 }
@@ -40,6 +41,13 @@ class HttpError extends Error {
   constructor(public status: number, message: string) { super(message) }
 }
 
+function localHost(request: IncomingMessage): boolean {
+  try {
+    const hostname = new URL(`http://${request.headers.host}`).hostname
+    return hostname === '127.0.0.1' || hostname === 'localhost'
+  } catch { return false }
+}
+
 function serveFile(response: ServerResponse, pathname: string, distDir: string): void {
   if (pathname !== '/' && !pathname.startsWith('/assets/')) {
     json(response, { error: 'Not found' }, 404)
@@ -66,6 +74,7 @@ function serveFile(response: ServerResponse, pathname: string, distDir: string):
     'Content-Length': size,
     'Cache-Control': 'no-store',
     'X-Content-Type-Options': 'nosniff',
+    'X-Frame-Options': 'DENY',
     'Content-Security-Policy': "default-src 'self'; connect-src 'self'; object-src 'none'; base-uri 'none'",
   })
   createReadStream(target).pipe(response)
@@ -73,6 +82,7 @@ function serveFile(response: ServerResponse, pathname: string, distDir: string):
 
 export function createServers(store: Store, distDir: string): { otlp: Server; dashboard: Server } {
   const otlp = createServer(async (request, response) => {
+    if (!localHost(request)) { json(response, { error: 'Invalid host' }, 403); return }
     if (request.method !== 'POST' || (request.url !== '/v1/metrics' && request.url !== '/v1/logs')) {
       json(response, { error: 'Not found' }, 404)
       return
@@ -96,6 +106,7 @@ export function createServers(store: Store, distDir: string): { otlp: Server; da
   })
 
   const dashboard = createServer((request, response) => {
+    if (!localHost(request)) { json(response, { error: 'Invalid host' }, 403); return }
     if (request.method !== 'GET') {
       json(response, { error: 'Not found' }, 404)
       return
@@ -111,6 +122,22 @@ export function createServers(store: Store, distDir: string): { otlp: Server; da
       }
       try { json(response, store.sessions(rawDays === 'all' ? null : Number(rawDays))) }
       catch (error) { console.error('Dashboard query failed:', error); json(response, { error: 'Internal error' }, 500) }
+      return
+    }
+    const promptsMatch = /^\/api\/sessions\/([^/]+)\/prompts$/.exec(url.pathname)
+    if (promptsMatch) {
+      const rawDays = url.searchParams.get('days') || '30'
+      if (!['7', '30', '90', 'all'].includes(rawDays)) {
+        json(response, { error: 'Invalid prompt query' }, 400)
+        return
+      }
+      try {
+        const sessionId = decodeURIComponent(promptsMatch[1])
+        json(response, store.sessionPrompts(sessionId, rawDays === 'all' ? null : Number(rawDays)))
+      } catch (error) {
+        console.error('Prompt query failed:', error)
+        json(response, { error: 'Internal error' }, 500)
+      }
       return
     }
     const eventsMatch = /^\/api\/sessions\/([^/]+)\/events$/.exec(url.pathname)

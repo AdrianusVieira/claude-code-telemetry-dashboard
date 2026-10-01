@@ -4,6 +4,7 @@ import { useTheme } from './useTheme'
 type Event = { name: string; timestamp: number; durationMs: number | null; toolName: string; success: string }
 type TokenPoint = { timestamp: number; input: number; output: number; cacheRead: number; cacheWrite: number; promptId: string }
 type TokenBar = TokenPoint & { label: string; requestCount: number; context: string }
+type PromptRecord = { id: string; timestamp: number; text: string | null; requests: number; tokens: number; costUsd: number | null }
 type Session = {
   id: string; title: string; project: string; email: string; firstSeen: number | null; lastSeen: number | null
   starts: number; prompts: number; inputTokens: number; outputTokens: number; cacheReadTokens: number
@@ -159,12 +160,50 @@ function ActivityList({ events }: { events: Event[] }) {
   return <ol className="event-list">{events.length ? events.map((event, index) => <li className="event-item" key={`${event.timestamp}-${index}`}><span className="event-dot" /><span className="event-label">{eventLabels[event.name] || event.name}{event.toolName && event.name === 'tool_result' ? ` · ${event.toolName}` : ''}</span><time className="event-time">{date(event.timestamp)}</time></li>) : <li className="event-empty">No log events received yet.</li>}</ol>
 }
 
+function PromptList({ prompts, loading, error }: { prompts: PromptRecord[]; loading: boolean; error: string }) {
+  const [order, setOrder] = useState<'cost' | 'tokens' | 'time'>('cost')
+  const [page, setPage] = useState(0)
+  const sorted = [...prompts].sort((a, b) => order === 'time' ? b.timestamp - a.timestamp
+    : order === 'tokens' ? b.tokens - a.tokens || b.timestamp - a.timestamp
+      : (b.costUsd ?? -1) - (a.costUsd ?? -1) || b.tokens - a.tokens)
+  const pageCount = Math.max(1, Math.ceil(sorted.length / 20))
+  const currentPage = Math.min(page, pageCount - 1)
+  const visible = sorted.slice(currentPage * 20, (currentPage + 1) * 20)
+  return <section className="panel prompt-panel detail-chart">
+    <div className="panel-head"><div><p className="eyebrow">COST DRIVERS</p><h2>Prompts and usage</h2></div><span className="count-chip">{prompts.length} prompts</span></div>
+    <div className="prompt-body">
+      <div className="usage-chart-meta"><span>Prompt text is sanitized locally before storage.</span><label>Order <select value={order} onChange={(event) => { setOrder(event.target.value as typeof order); setPage(0) }}><option value="cost">Highest cost</option><option value="tokens">Most tokens</option><option value="time">Newest first</option></select></label></div>
+      {loading ? <p className="chart-empty">Loading prompts…</p> : error ? <p className="activity-error" role="alert">{error}</p> : !prompts.length ? <p className="chart-empty">No prompt events in this period.</p> :
+        <ol className="prompt-list">{visible.map((prompt) => <li className="prompt-item" key={prompt.id}>
+          <div className="prompt-meta"><time>{date(prompt.timestamp)}</time><span>{count(prompt.tokens)} tokens</span><span>{prompt.requests} {prompt.requests === 1 ? 'request' : 'requests'}</span><strong>{prompt.costUsd === null ? 'Cost unavailable' : `$${prompt.costUsd.toFixed(prompt.costUsd < 0.01 ? 4 : 2)}`}</strong></div>
+          <details><summary>{prompt.text ? prompt.text.split('\n')[0].slice(0, 180) : 'Prompt text unavailable'}</summary><pre>{prompt.text || 'Enable local prompt telemetry to collect future prompts. Existing prompts are not backfilled.'}</pre></details>
+        </li>)}</ol>}
+      {pageCount > 1 && <div className="usage-page-controls"><button type="button" disabled={currentPage === 0} onClick={() => setPage(currentPage - 1)}>← Previous</button><span>Page {currentPage + 1} of {pageCount}</span><button type="button" disabled={currentPage === pageCount - 1} onClick={() => setPage(currentPage + 1)}>Next →</button></div>}
+      <p className="prompt-note">Per-prompt cost sums API request estimates when every linked request has a cost. Session cost metrics may differ.</p>
+    </div>
+  </section>
+}
+
 function SessionDetail({ session, period, onBack }: { session: Session; period: Period; onBack: () => void }) {
+  const [prompts, setPrompts] = useState<PromptRecord[]>([])
+  const [promptsLoading, setPromptsLoading] = useState(true)
+  const [promptsError, setPromptsError] = useState('')
   const [showAll, setShowAll] = useState(false)
   const [allEvents, setAllEvents] = useState<Event[]>([])
   const [activityTotal, setActivityTotal] = useState(session.activityCount)
   const [loading, setLoading] = useState(false)
   const [activityError, setActivityError] = useState('')
+  useEffect(() => {
+    const controller = new AbortController()
+    setPromptsLoading(true)
+    setPromptsError('')
+    fetch(`/api/sessions/${encodeURIComponent(session.id)}/prompts?days=${period}`, { signal: controller.signal, cache: 'no-store' })
+      .then((response) => { if (!response.ok) throw new Error(`HTTP ${response.status}`); return response.json() as Promise<PromptRecord[]> })
+      .then(setPrompts)
+      .catch((error: unknown) => { if (!controller.signal.aborted) setPromptsError(error instanceof Error ? error.message : 'Could not load prompts') })
+      .finally(() => { if (!controller.signal.aborted) setPromptsLoading(false) })
+    return () => controller.abort()
+  }, [session.id, period, session.activityCount])
   useEffect(() => {
     if (!showAll) return
     const controller = new AbortController()
@@ -205,6 +244,7 @@ function SessionDetail({ session, period, onBack }: { session: Session; period: 
     <div className="detail-hero"><Stat label="Tokens used" value={count(tokens(session))} hint="Includes cache" /><Stat label="Estimated cost" value={session.estimatedCostUsd == null ? 'Unavailable' : `$${session.estimatedCostUsd.toFixed(session.estimatedCostUsd < 0.01 ? 4 : 2)}`} hint="Claude Code estimate" /><Stat label="Prompts sent" value={count(session.prompts)} hint="User prompt events" /><Stat label="API requests" value={count(session.apiRequests)} hint="Calls to Claude" /></div>
     <section className="panel chart-panel"><div className="panel-head"><div><p className="eyebrow">USAGE OVER TIME</p><h2>Token timeline</h2></div><span className="count-chip">{session.apiRequests} API requests</span></div><div className="chart-body"><TokenTimeline points={session.tokenTimeline} /></div></section>
     <section className="panel chart-panel detail-chart"><div className="panel-head"><div><p className="eyebrow">TOKEN COMPARISON</p><h2>By prompt</h2></div><span className="count-chip">Grouped API requests</span></div><div className="chart-body"><TokenUsageBars points={session.tokenTimeline} level="prompt" /></div></section>
+    <PromptList key={`${session.id}-${period}`} prompts={prompts} loading={promptsLoading} error={promptsError} />
     <section className="panel chart-panel detail-chart"><div className="panel-head"><div><p className="eyebrow">TOKEN COMPARISON</p><h2>By API request</h2></div><span className="count-chip">{session.apiRequests} API requests</span></div><div className="chart-body"><TokenUsageBars points={session.tokenTimeline} level="request" /></div></section>
     <div className="detail-grid"><section className="panel detail-card"><TokenBreakdown session={session} /><div className="detail-section"><h3>Performance</h3><div className="info-grid">{performance.map(([label, value]) => <div key={label}><span>{label}</span><strong>{value}</strong></div>)}</div></div></section>
       <section className="panel detail-card"><h3>Context</h3><dl className="context-list">{context.map(([label, value]) => <div key={label}><dt>{label}</dt><dd>{value}</dd></div>)}</dl></section></div>

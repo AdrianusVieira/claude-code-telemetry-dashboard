@@ -105,6 +105,58 @@ test('discard sensitive fields and unknown events', () => {
   } finally { f.close() }
 })
 
+test('stores only sanitized prompts and links request costs by prompt ID', () => {
+  const f = fixture()
+  try {
+    const first = log('user_prompt', { 'prompt.id': 'prompt-one', prompt: 'Fix timeout. API_KEY=plain-secret-value' })
+    assert.equal(f.store.ingestLogs(first), 1)
+    assert.equal(f.store.ingestLogs(first), 0)
+    f.store.ingestLogs(log('api_request', { 'prompt.id': 'prompt-one', input_tokens: 10, output_tokens: 5, cost_usd: 0.03 }))
+    f.store.ingestLogs(log('api_request', { 'prompt.id': 'prompt-one', input_tokens: 7, cost_usd: 0.02 }))
+    f.store.ingestLogs(log('user_prompt', { 'prompt.id': 'prompt-two', prompt: 'Review the query' }))
+    const prompts = f.store.sessionPrompts('session-1', 30)
+    assert.equal(prompts.length, 2)
+    assert.equal(prompts[0].text, 'Review the query')
+    assert.equal(prompts[1].tokens, 22)
+    assert.equal(prompts[1].costUsd, 0.05)
+    assert.match(prompts[1].text!, /Fix timeout/)
+    assert.doesNotMatch(JSON.stringify(prompts), /plain-secret-value/)
+    const db = new Database(f.dbPath, { readonly: true })
+    try { assert.doesNotMatch(JSON.stringify(db.prepare('SELECT * FROM events').all()), /plain-secret-value/) }
+    finally { db.close() }
+  } finally { f.close() }
+})
+
+test('an unknown request cost makes the prompt cost unavailable', () => {
+  const f = fixture()
+  try {
+    f.store.ingestLogs(log('user_prompt', { 'prompt.id': 'prompt-one', prompt: 'Review this query' }))
+    f.store.ingestLogs(log('api_request', { 'prompt.id': 'prompt-one', cost_usd: 0.01 }))
+    f.store.ingestLogs(log('api_request', { 'prompt.id': 'prompt-one', input_tokens: 3 }))
+    assert.equal(f.store.sessionPrompts('session-1', 30)[0].costUsd, null)
+  } finally { f.close() }
+})
+
+test('migrates an existing events table to add sanitized prompt storage', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'claude-dashboard-migrate-'))
+  const path = join(dir, 'old.sqlite3')
+  const db = new Database(path)
+  db.exec(`CREATE TABLE events (
+    id TEXT PRIMARY KEY, timestamp_ms INTEGER NOT NULL, name TEXT NOT NULL,
+    session_id TEXT NOT NULL, project TEXT NOT NULL, user_email TEXT NOT NULL,
+    model TEXT NOT NULL, duration_ms REAL, input_tokens INTEGER, output_tokens INTEGER,
+    cache_read_tokens INTEGER, cache_creation_tokens INTEGER, cost_usd REAL,
+    tool_name TEXT, success TEXT, prompt_id TEXT
+  )`)
+  db.close()
+  const store = new Store(path)
+  try {
+    const migrated = new Database(path, { readonly: true })
+    try { assert.equal((migrated.pragma('table_info(events)') as { name: string }[]).some((column) => column.name === 'prompt_text'), true) }
+    finally { migrated.close() }
+  } finally { store.close(); rmSync(dir, { recursive: true, force: true }) }
+})
+
 test('skip cumulative metrics and agents view launches', () => {
   const f = fixture()
   try {
