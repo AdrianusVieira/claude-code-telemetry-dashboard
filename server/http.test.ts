@@ -50,6 +50,13 @@ test('OTLP HTTP/JSON reaches SQLite and the dashboard API', async () => {
     assert.match(await page.text(), /Claude Code telemetry/)
     const invalid = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?days=banana`)
     assert.equal(invalid.status, 400)
+    const timestampMs = Number(BigInt(timestamp) / 1_000_000n)
+    const custom = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?from=${timestampMs}&to=${timestampMs + 1}`)
+    assert.equal((await custom.json() as { sessions: unknown[] }).sessions.length, 1)
+    const excluded = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?from=${timestampMs + 1}&to=${timestampMs + 2}`)
+    assert.equal((await excluded.json() as { sessions: unknown[] }).sessions.length, 0)
+    const reversed = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?from=${timestampMs + 1}&to=${timestampMs}`)
+    assert.equal(reversed.status, 400)
     const secret = 'sensitive-local-value'
     const logPayload = { resourceLogs: [{ resource: { attributes: [] }, scopeLogs: [{ logRecords: [{
       timeUnixNano: timestamp, attributes: [
@@ -75,6 +82,12 @@ test('OTLP HTTP/JSON reaches SQLite and the dashboard API', async () => {
       request.end()
     })
     assert.equal(rebindingStatus, 403)
+    const deleted = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions/pilot-chat`, { method: 'DELETE' })
+    assert.equal(deleted.status, 204)
+    const afterDelete = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions?days=30`)
+    assert.equal((await afterDelete.json() as { sessions: unknown[] }).sessions.length, 0)
+    const deleteAgain = await fetch(`http://127.0.0.1:${dashboardPort}/api/sessions/pilot-chat`, { method: 'DELETE' })
+    assert.equal(deleteAgain.status, 404)
   } finally {
     await Promise.all([close(otlp), close(dashboard)])
     store.close()

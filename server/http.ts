@@ -1,7 +1,7 @@
 import { createReadStream, statSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { extname, relative, resolve, sep } from 'node:path'
-import { Store } from './store.js'
+import { Store, type TimeWindow } from './store.js'
 
 const MAX_BODY_BYTES = 2_000_000
 
@@ -39,6 +39,21 @@ async function body(request: IncomingMessage): Promise<unknown> {
 
 class HttpError extends Error {
   constructor(public status: number, message: string) { super(message) }
+}
+
+function timeWindow(url: URL): TimeWindow {
+  const from = url.searchParams.get('from')
+  const to = url.searchParams.get('to')
+  if (from !== null || to !== null) {
+    if (!from || !to || !/^\d+$/.test(from) || !/^\d+$/.test(to)) throw new HttpError(400, 'Invalid time range')
+    const start = Number(from)
+    const end = Number(to)
+    if (!Number.isSafeInteger(start) || !Number.isSafeInteger(end) || start >= end) throw new HttpError(400, 'Invalid time range')
+    return { start, end }
+  }
+  const days = url.searchParams.get('days') || '30'
+  if (!['7', '30', '90', 'all'].includes(days)) throw new HttpError(400, 'Invalid period')
+  return days === 'all' ? null : Number(days)
 }
 
 function localHost(request: IncomingMessage): boolean {
@@ -107,34 +122,37 @@ export function createServers(store: Store, distDir: string): { otlp: Server; da
 
   const dashboard = createServer((request, response) => {
     if (!localHost(request)) { json(response, { error: 'Invalid host' }, 403); return }
-    if (request.method !== 'GET') {
-      json(response, { error: 'Not found' }, 404)
-      return
-    }
     let url: URL
     try { url = new URL(request.url || '/', 'http://127.0.0.1') }
     catch { json(response, { error: 'Invalid URL' }, 400); return }
-    if (url.pathname === '/api/sessions') {
-      const rawDays = url.searchParams.get('days') || '30'
-      if (!['7', '30', '90', 'all'].includes(rawDays)) {
-        json(response, { error: 'days must be 7, 30, 90, or all' }, 400)
-        return
+    const sessionMatch = /^\/api\/sessions\/([^/]+)$/.exec(url.pathname)
+    if (request.method === 'DELETE' && sessionMatch) {
+      try {
+        const sessionId = decodeURIComponent(sessionMatch[1])
+        if (!store.deleteSession(sessionId)) { json(response, { error: 'Session not found' }, 404); return }
+        response.writeHead(204, { 'Cache-Control': 'no-store' })
+        response.end()
+      } catch (error) {
+        if (error instanceof URIError) { json(response, { error: 'Invalid session ID' }, 400); return }
+        console.error('Session delete failed:', error)
+        json(response, { error: 'Internal error' }, 500)
       }
-      try { json(response, store.sessions(rawDays === 'all' ? null : Number(rawDays))) }
-      catch (error) { console.error('Dashboard query failed:', error); json(response, { error: 'Internal error' }, 500) }
+      return
+    }
+    if (request.method !== 'GET') { json(response, { error: 'Not found' }, 404); return }
+    if (url.pathname === '/api/sessions') {
+      try { json(response, store.sessions(timeWindow(url))) }
+      catch (error) { if (error instanceof HttpError) { json(response, { error: error.message }, error.status); return }
+        console.error('Dashboard query failed:', error); json(response, { error: 'Internal error' }, 500) }
       return
     }
     const promptsMatch = /^\/api\/sessions\/([^/]+)\/prompts$/.exec(url.pathname)
     if (promptsMatch) {
-      const rawDays = url.searchParams.get('days') || '30'
-      if (!['7', '30', '90', 'all'].includes(rawDays)) {
-        json(response, { error: 'Invalid prompt query' }, 400)
-        return
-      }
       try {
         const sessionId = decodeURIComponent(promptsMatch[1])
-        json(response, store.sessionPrompts(sessionId, rawDays === 'all' ? null : Number(rawDays)))
+        json(response, store.sessionPrompts(sessionId, timeWindow(url)))
       } catch (error) {
+        if (error instanceof HttpError) { json(response, { error: error.message }, error.status); return }
         console.error('Prompt query failed:', error)
         json(response, { error: 'Internal error' }, 500)
       }
@@ -142,16 +160,16 @@ export function createServers(store: Store, distDir: string): { otlp: Server; da
     }
     const eventsMatch = /^\/api\/sessions\/([^/]+)\/events$/.exec(url.pathname)
     if (eventsMatch) {
-      const rawDays = url.searchParams.get('days') || '30'
       const rawOffset = url.searchParams.get('offset') || '0'
-      if (!['7', '30', '90', 'all'].includes(rawDays) || !/^\d+$/.test(rawOffset)) {
+      if (!/^\d+$/.test(rawOffset)) {
         json(response, { error: 'Invalid activity query' }, 400)
         return
       }
       try {
         const sessionId = decodeURIComponent(eventsMatch[1])
-        json(response, store.sessionEvents(sessionId, rawDays === 'all' ? null : Number(rawDays), Math.min(Number(rawOffset), 1_000_000)))
+        json(response, store.sessionEvents(sessionId, timeWindow(url), Math.min(Number(rawOffset), 1_000_000)))
       } catch (error) {
+        if (error instanceof HttpError) { json(response, { error: error.message }, error.status); return }
         console.error('Activity query failed:', error)
         json(response, { error: 'Internal error' }, 500)
       }

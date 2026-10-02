@@ -53,6 +53,7 @@ function integer(value: unknown): number | null {
 }
 
 function millis(nanos: unknown): number {
+  if (typeof nanos === 'string' && /^\d+$/.test(nanos)) return Number(BigInt(nanos) / 1_000_000n)
   const parsed = numeric(nanos)
   return parsed === null ? Date.now() : Math.trunc(parsed / 1_000_000)
 }
@@ -100,6 +101,14 @@ type WorkingSession = {
   metricTokens: Record<string, number>; eventCostUsd: number; eventCostSeen: boolean
 }
 
+export type TimeWindow = number | null | { start: number; end: number }
+
+function bounds(window: TimeWindow): { start: number; end: number } {
+  return typeof window === 'object' && window !== null
+    ? window
+    : { start: window === null ? 0 : Date.now() - window * 86_400_000, end: Number.MAX_SAFE_INTEGER }
+}
+
 function median(values: number[]): number | null {
   if (!values.length) return null
   values.sort((a, b) => a - b)
@@ -109,6 +118,7 @@ function median(values: number[]): number | null {
 
 export class Store {
   private db: Database.Database
+  private deletedSessions: Set<string>
 
   constructor(path: string) {
     mkdirSync(dirname(path), { recursive: true })
@@ -133,14 +143,35 @@ export class Store {
         session_id TEXT PRIMARY KEY, title TEXT NOT NULL, source TEXT NOT NULL,
         updated_ms INTEGER NOT NULL
       );
+      CREATE TABLE IF NOT EXISTS deleted_sessions (
+        session_id TEXT PRIMARY KEY, deleted_ms INTEGER NOT NULL
+      );
     `)
     if (!(this.db.pragma('table_info(events)') as { name: string }[]).some((column) => column.name === 'prompt_text')) {
       this.db.exec('ALTER TABLE events ADD COLUMN prompt_text TEXT')
     }
     this.db.prepare("DELETE FROM metric_points WHERE name = 'claude_code.session.count'").run()
+    this.deletedSessions = new Set((this.db.prepare('SELECT session_id FROM deleted_sessions').all() as { session_id: string }[]).map((row) => row.session_id))
   }
 
   close(): void { this.db.close() }
+
+  deleteSession(sessionId: string): boolean {
+    if (!sessionId || this.deletedSessions.has(sessionId)) return false
+    const removed = this.db.transaction(() => {
+      const exists = this.db.prepare(`SELECT 1 FROM metric_points WHERE session_id = ?
+        UNION SELECT 1 FROM events WHERE session_id = ?
+        UNION SELECT 1 FROM titles WHERE session_id = ? LIMIT 1`).get(sessionId, sessionId, sessionId)
+      if (!exists) return false
+      this.db.prepare('INSERT INTO deleted_sessions (session_id, deleted_ms) VALUES (?, ?)').run(sessionId, Date.now())
+      this.db.prepare('DELETE FROM metric_points WHERE session_id = ?').run(sessionId)
+      this.db.prepare('DELETE FROM events WHERE session_id = ?').run(sessionId)
+      this.db.prepare('DELETE FROM titles WHERE session_id = ?').run(sessionId)
+      return true
+    })()
+    if (removed) this.deletedSessions.add(sessionId)
+    return removed
+  }
 
   ingestMetrics(payload: unknown): number {
     const rows: MetricRow[] = []
@@ -159,7 +190,7 @@ export class Store {
             const attrs = { ...resource, ...attributes(point.attributes) }
             const { sessionId, project, email } = identity(attrs)
             const value = numeric(point.asDouble ?? point.asInt)
-            if (!sessionId || value === null) continue
+            if (!sessionId || this.deletedSessions.has(sessionId) || value === null) continue
             rows.push({
               id: fingerprint('metric', [name, resource, point]),
               timestamp_ms: millis(point.timeUnixNano), name, session_id: sessionId,
@@ -188,7 +219,7 @@ export class Store {
           const name = String(attrs['event.name'] || record.eventName || object(record.body).stringValue || '').replace(/^claude_code\./, '')
           if (!EVENTS.has(name)) continue
           const { sessionId, project, email } = identity(attrs)
-          if (!sessionId) continue
+          if (!sessionId || this.deletedSessions.has(sessionId)) continue
           let promptText: string | null = null
           if (name === 'user_prompt') {
             try { promptText = sanitizePrompt(attrs.prompt) }
@@ -219,17 +250,17 @@ export class Store {
   }
 
   setTitle(sessionId: string, title: string, updatedMs: number): void {
-    if (!sessionId || !title.trim()) return
+    if (!sessionId || this.deletedSessions.has(sessionId) || !title.trim()) return
     this.db.prepare(`INSERT INTO titles(session_id, title, source, updated_ms)
       VALUES (?, ?, 'local-transcript', ?)
       ON CONFLICT(session_id) DO UPDATE SET title=excluded.title, updated_ms=excluded.updated_ms
       WHERE excluded.updated_ms >= titles.updated_ms`).run(sessionId, title.trim().slice(0, 200), updatedMs)
   }
 
-  sessions(days: number | null = 30) {
-    const cutoff = days === null ? 0 : Date.now() - days * 86_400_000
-    const metrics = this.db.prepare("SELECT * FROM metric_points WHERE timestamp_ms >= ? AND name != 'claude_code.session.count'").all(cutoff) as MetricRow[]
-    const events = this.db.prepare('SELECT * FROM events WHERE timestamp_ms >= ?').all(cutoff) as EventRow[]
+  sessions(window: TimeWindow = 30) {
+    const { start, end } = bounds(window)
+    const metrics = this.db.prepare("SELECT * FROM metric_points WHERE timestamp_ms >= ? AND timestamp_ms < ? AND name != 'claude_code.session.count'").all(start, end) as MetricRow[]
+    const events = this.db.prepare('SELECT * FROM events WHERE timestamp_ms >= ? AND timestamp_ms < ?').all(start, end) as EventRow[]
     const titles = new Map((this.db.prepare('SELECT session_id, title FROM titles').all() as { session_id: string; title: string }[]).map((row) => [row.session_id, row.title]))
     const sessions = new Map<string, WorkingSession>()
 
@@ -311,24 +342,24 @@ export class Store {
         tokenTimeline: item.tokenTimeline.sort((a, b) => a.timestamp - b.timestamp),
       }
     }).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
-    return { periodDays: days, sessions: output }
+    return { periodDays: typeof window === 'number' ? window : null, sessions: output }
   }
 
-  sessionEvents(sessionId: string, days: number | null, offset = 0, limit = 50) {
-    const cutoff = days === null ? 0 : Date.now() - days * 86_400_000
-    const total = (this.db.prepare('SELECT COUNT(*) AS count FROM events WHERE session_id = ? AND timestamp_ms >= ?').get(sessionId, cutoff) as { count: number }).count
+  sessionEvents(sessionId: string, window: TimeWindow, offset = 0, limit = 50) {
+    const { start, end } = bounds(window)
+    const total = (this.db.prepare('SELECT COUNT(*) AS count FROM events WHERE session_id = ? AND timestamp_ms >= ? AND timestamp_ms < ?').get(sessionId, start, end) as { count: number }).count
     const rows = this.db.prepare(`SELECT name, timestamp_ms, duration_ms, tool_name, success FROM events
-      WHERE session_id = ? AND timestamp_ms >= ? ORDER BY timestamp_ms DESC, rowid DESC LIMIT ? OFFSET ?`)
-      .all(sessionId, cutoff, limit, offset) as Pick<EventRow, 'name' | 'timestamp_ms' | 'duration_ms' | 'tool_name' | 'success'>[]
+      WHERE session_id = ? AND timestamp_ms >= ? AND timestamp_ms < ? ORDER BY timestamp_ms DESC, rowid DESC LIMIT ? OFFSET ?`)
+      .all(sessionId, start, end, limit, offset) as Pick<EventRow, 'name' | 'timestamp_ms' | 'duration_ms' | 'tool_name' | 'success'>[]
     return { total, events: rows.map((row) => ({ name: row.name, timestamp: row.timestamp_ms, durationMs: row.duration_ms, toolName: row.tool_name, success: row.success })) }
   }
 
-  sessionPrompts(sessionId: string, days: number | null) {
-    const cutoff = days === null ? 0 : Date.now() - days * 86_400_000
+  sessionPrompts(sessionId: string, window: TimeWindow) {
+    const { start, end } = bounds(window)
     const rows = this.db.prepare(`SELECT id, name, timestamp_ms, prompt_id, prompt_text,
       input_tokens, output_tokens, cache_read_tokens, cache_creation_tokens, cost_usd
-      FROM events WHERE session_id = ? AND timestamp_ms >= ? AND name IN ('user_prompt', 'api_request')
-      ORDER BY timestamp_ms, rowid`).all(sessionId, cutoff) as EventRow[]
+      FROM events WHERE session_id = ? AND timestamp_ms >= ? AND timestamp_ms < ? AND name IN ('user_prompt', 'api_request')
+      ORDER BY timestamp_ms, rowid`).all(sessionId, start, end) as EventRow[]
     const prompts = new Map<string, {
       id: string; timestamp: number; text: string | null; requests: number; tokens: number;
       costUsd: number | null

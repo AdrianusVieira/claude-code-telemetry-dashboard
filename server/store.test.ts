@@ -87,6 +87,52 @@ test('counts prompts, builds a token timeline, and pages full activity', () => {
   } finally { f.close() }
 })
 
+test('applies a half-open custom range to sessions, prompts, and activity', () => {
+  const f = fixture()
+  try {
+    const start = Date.now() - 60_000
+    const inside = log('user_prompt', { 'prompt.id': 'inside' })
+    inside.resourceLogs[0].scopeLogs[0].logRecords[0].timeUnixNano = String(start * 1_000_000)
+    const outside = log('user_prompt', { 'prompt.id': 'outside' })
+    outside.resourceLogs[0].scopeLogs[0].logRecords[0].timeUnixNano = String((start + 1000) * 1_000_000)
+    f.store.ingestLogs(inside)
+    f.store.ingestLogs(outside)
+    const window = { start, end: start + 1000 }
+    assert.equal(f.store.sessions(window).sessions[0].prompts, 1)
+    assert.equal(f.store.sessionPrompts('session-1', window).length, 1)
+    assert.equal(f.store.sessionEvents('session-1', window).total, 1)
+  } finally { f.close() }
+})
+
+test('deletes a session and ignores later telemetry for its ID', () => {
+  const f = fixture()
+  try {
+    const tokenMetric = metric('claude_code.token.usage', 12, 'input')
+    const promptEvent = log('user_prompt', { 'prompt.id': 'prompt-one' })
+    f.store.ingestMetrics(tokenMetric)
+    f.store.ingestLogs(promptEvent)
+    f.store.setTitle('session-1', 'Deleted chat', Date.now())
+    assert.equal(f.store.deleteSession('session-1'), true)
+    assert.equal(f.store.sessions().sessions.length, 0)
+    assert.equal(f.store.sessionEvents('session-1', 30).total, 0)
+    assert.equal(f.store.sessionPrompts('session-1', 30).length, 0)
+    assert.equal(f.store.ingestMetrics(tokenMetric), 0)
+    assert.equal(f.store.ingestLogs(promptEvent), 0)
+    f.store.setTitle('session-1', 'Restored title', Date.now())
+    assert.equal(f.store.deleteSession('session-1'), false)
+    const db = new Database(f.dbPath, { readonly: true })
+    try { assert.equal((db.prepare('SELECT COUNT(*) AS count FROM titles WHERE session_id = ?').get('session-1') as { count: number }).count, 0) }
+    finally { db.close() }
+    f.store.close()
+    const reopened = new Store(f.dbPath)
+    try {
+      assert.equal(reopened.ingestMetrics(tokenMetric), 0)
+      assert.equal(reopened.ingestLogs(promptEvent), 0)
+      assert.equal(reopened.sessions().sessions.length, 0)
+    } finally { reopened.close() }
+  } finally { rmSync(f.dir, { recursive: true, force: true }) }
+})
+
 test('discard sensitive fields and unknown events', () => {
   const f = fixture()
   try {
@@ -114,10 +160,12 @@ test('stores only sanitized prompts and links request costs by prompt ID', () =>
     f.store.ingestLogs(log('user_prompt', { 'prompt.id': 'prompt-two', prompt: 'Review the query' }))
     const prompts = f.store.sessionPrompts('session-1', 30)
     assert.equal(prompts.length, 2)
-    assert.equal(prompts[0].text, 'Review the query')
-    assert.equal(prompts[1].tokens, 22)
-    assert.equal(prompts[1].costUsd, 0.05)
-    assert.match(prompts[1].text!, /Fix timeout/)
+    const firstPrompt = prompts.find((prompt) => prompt.id === 'prompt-one')!
+    const secondPrompt = prompts.find((prompt) => prompt.id === 'prompt-two')!
+    assert.equal(secondPrompt.text, 'Review the query')
+    assert.equal(firstPrompt.tokens, 22)
+    assert.equal(firstPrompt.costUsd, 0.05)
+    assert.match(firstPrompt.text!, /Fix timeout/)
     assert.doesNotMatch(JSON.stringify(prompts), /plain-secret-value/)
     const db = new Database(f.dbPath, { readonly: true })
     try { assert.doesNotMatch(JSON.stringify(db.prepare('SELECT * FROM events').all()), /plain-secret-value/) }
