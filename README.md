@@ -56,7 +56,7 @@ The OTLP receiver supports HTTP/JSON only. If Claude Code is set to `grpc` or `h
 | Tokens | Input, output, cache read, and cache creation tokens. API request events supply the breakdown when available; otherwise token metrics do. |
 | Active time | `claude_code.active_time.total` for user interaction and CLI processing. Idle time is excluded. “Unavailable” means Claude Code has not sent that metric. |
 | Median request time | Median `duration_ms` of `api_request` events in this chat and period. This is API request wall time, not tokens per second. |
-| Estimated cost | Claude Code's `cost.usage` metric, or `api_request` cost if the metric has not arrived. It is an estimate, not an invoice. |
+| Estimated cost | Claude Code's `cost.usage` metric, or `api_request` cost if the metric has not arrived. The Dashboard sums the available chat estimates for the selected period and projects and marks the total as partial when any chat lacks a cost estimate. It is an estimate, not an invoice. |
 
 The period filter uses telemetry timestamps. Today and custom date ranges use the browser's local calendar days. A long chat can appear in multiple periods; its numbers are calculated from the data in each selected period. The dashboard refreshes every 10 seconds.
 
