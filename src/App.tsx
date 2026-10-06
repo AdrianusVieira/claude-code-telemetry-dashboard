@@ -23,7 +23,7 @@ const count = (value: number) => fmt.format(Math.round(value))
 const shortCount = (value: number) => value >= 1_000_000 ? `${(value / 1_000_000).toFixed(1)}m` : value >= 10_000 ? `${(value / 1_000).toFixed(1)}k` : count(value)
 const cost = (value: number) => `$${value.toFixed(value < 0.01 ? 4 : 2)}`
 const duration = (seconds: number | null) => seconds == null ? 'Unavailable' : seconds >= 3600 ? `${(seconds / 3600).toFixed(1)}h` : seconds >= 60 ? `${Math.round(seconds / 60)}m` : `${Math.round(seconds)}s`
-const date = (value: number | null) => value ? new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value)) : '—'
+const date = (value: number | null) => value == null ? '—' : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 const time = (value: number) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value))
 const tokens = (s: Session) => s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreationTokens
 const pointTokens = (point: TokenPoint) => point.input + point.output + point.cacheRead + point.cacheWrite
@@ -96,7 +96,7 @@ function TokenTimeline({ points }: { points: TokenPoint[] }) {
     <text x="2" y="34">{shortCount(total)}</text><text x="2" y="106">{shortCount(total / 2)}</text><text x="49" y="179">0</text>
     <path className="chart-area" d={area} /><path className="chart-line" d={line} />
     {plot.map((point, index) => <circle key={`${point.timestamp}-${index}`} className="chart-point" cx={point.x} cy={point.y} r="5" tabIndex={0} aria-label={`${date(point.timestamp)}: ${count(pointTokens(point))} tokens in request; ${count(point.cumulative)} cumulative`}><title>{`${date(point.timestamp)} · ${count(pointTokens(point))} tokens in this request · ${count(point.cumulative)} cumulative`}</title></circle>)}
-    <text x="64" y="204">{time(minTime)}</text><text x="770" y="204" textAnchor="end">{time(maxTime)}</text>
+    <text x="64" y="204">{date(minTime)}</text><text x="770" y="204" textAnchor="end">{date(maxTime)}</text>
   </svg><p>Each point is an API request. The line shows cumulative tokens, including cache reads and writes.</p></div>
 }
 
