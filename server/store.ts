@@ -92,7 +92,8 @@ type EventRow = {
 }
 type Activity = { name: string; timestamp: number; durationMs: number | null; toolName: string; success: string }
 type WorkingSession = {
-  id: string; title: string; project: string; email: string; firstSeen: number | null;
+  id: string; title: string; project: string; email: string; emails: Map<string, number>;
+  emailLastSeen: number | null; firstSeen: number | null;
   lastSeen: number | null; inputTokens: number; outputTokens: number;
   cacheReadTokens: number; cacheCreationTokens: number; activeUserSeconds: number | null;
   activeCliSeconds: number | null; estimatedCostUsd: number | null; apiRequests: number;
@@ -102,6 +103,14 @@ type WorkingSession = {
 }
 
 export type TimeWindow = number | null | { start: number; end: number }
+
+type AccountSlice = {
+  email: string; project: string; sessionId: string; firstSeen: number; lastSeen: number
+  prompts: number; apiRequests: number; inputTokens: number; outputTokens: number
+  cacheReadTokens: number; cacheCreationTokens: number; activeUserSeconds: number | null
+  activeCliSeconds: number | null; estimatedCostUsd: number | null
+  metricTokens: Record<string, number>; eventCostUsd: number; eventCostSeen: boolean
+}
 
 function bounds(window: TimeWindow): { start: number; end: number } {
   return typeof window === 'object' && window !== null
@@ -269,7 +278,8 @@ export class Store {
       if (!item) {
         item = {
           id: sessionId, title: titles.get(sessionId) || `Session ${sessionId.slice(0, 8)}`,
-          project: 'Unknown', email: '', firstSeen: null, lastSeen: null,
+          project: 'Unknown', email: '', emails: new Map(), emailLastSeen: null,
+          firstSeen: null, lastSeen: null,
           inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
           activeUserSeconds: null, activeCliSeconds: null, estimatedCostUsd: null,
           apiRequests: 0, errors: 0, prompts: 0, models: new Set(), latencies: [], recentEvents: [], tokenTimeline: [],
@@ -284,7 +294,15 @@ export class Store {
       item.firstSeen = Math.min(item.firstSeen ?? row.timestamp_ms, row.timestamp_ms)
       item.lastSeen = Math.max(item.lastSeen ?? row.timestamp_ms, row.timestamp_ms)
       if (row.project !== 'Unknown') item.project = row.project
-      if (row.user_email) item.email = row.user_email
+      if (row.user_email) {
+        const firstSeen = item.emails.get(row.user_email)
+        if (firstSeen === undefined || row.timestamp_ms < firstSeen) item.emails.set(row.user_email, row.timestamp_ms)
+        if (item.emailLastSeen === null || row.timestamp_ms > item.emailLastSeen ||
+          (row.timestamp_ms === item.emailLastSeen && row.user_email > item.email)) {
+          item.email = row.user_email
+          item.emailLastSeen = row.timestamp_ms
+        }
+      }
       if (row.model) item.models.add(row.model)
     }
 
@@ -334,15 +352,100 @@ export class Store {
         item.cacheCreationTokens = item.metricTokens.cacheCreationTokens || 0
       }
       if (item.estimatedCostUsd === null && item.eventCostSeen) item.estimatedCostUsd = item.eventCostUsd
-      const { metricTokens: _metricTokens, eventCostUsd: _eventCostUsd, eventCostSeen: _eventCostSeen, latencies, models, ...visible } = item
+      const { metricTokens: _metricTokens, eventCostUsd: _eventCostUsd, eventCostSeen: _eventCostSeen,
+        emailLastSeen: _emailLastSeen, latencies, models, emails, ...visible } = item
       return {
-        ...visible, models: [...models].sort(),
+        ...visible,
+        emails: [...emails].sort(([emailA, timeA], [emailB, timeB]) => timeA - timeB || emailA.localeCompare(emailB)).map(([email]) => email),
+        models: [...models].sort(),
         medianRequestMs: median(latencies), activityCount: item.recentEvents.length,
         recentEvents: item.recentEvents.sort((a, b) => b.timestamp - a.timestamp).slice(0, 12),
         tokenTimeline: item.tokenTimeline.sort((a, b) => a.timestamp - b.timestamp),
       }
     }).sort((a, b) => (b.lastSeen || 0) - (a.lastSeen || 0))
     return { periodDays: typeof window === 'number' ? window : null, sessions: output }
+  }
+
+  accounts(window: TimeWindow = 30, projects: string[] = []) {
+    const { start, end } = bounds(window)
+    const metrics = this.db.prepare("SELECT * FROM metric_points WHERE timestamp_ms >= ? AND timestamp_ms < ? AND name != 'claude_code.session.count'").all(start, end) as MetricRow[]
+    const events = this.db.prepare('SELECT * FROM events WHERE timestamp_ms >= ? AND timestamp_ms < ?').all(start, end) as EventRow[]
+    const slices = new Map<string, AccountSlice>()
+    const included = (row: MetricRow | EventRow) => !projects.length || projects.includes(row.project)
+    const get = (row: MetricRow | EventRow): AccountSlice => {
+      const key = JSON.stringify([row.user_email, row.project, row.session_id])
+      let slice = slices.get(key)
+      if (!slice) {
+        slice = { email: row.user_email, project: row.project, sessionId: row.session_id,
+          firstSeen: row.timestamp_ms, lastSeen: row.timestamp_ms, prompts: 0, apiRequests: 0,
+          inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+          activeUserSeconds: null, activeCliSeconds: null, estimatedCostUsd: null,
+          metricTokens: {}, eventCostUsd: 0, eventCostSeen: false }
+        slices.set(key, slice)
+      }
+      slice.firstSeen = Math.min(slice.firstSeen, row.timestamp_ms)
+      slice.lastSeen = Math.max(slice.lastSeen, row.timestamp_ms)
+      return slice
+    }
+    for (const row of metrics) {
+      if (!included(row)) continue
+      const slice = get(row)
+      if (row.name === 'claude_code.token.usage') {
+        const field = ({ input: 'inputTokens', output: 'outputTokens', cacheRead: 'cacheReadTokens', cacheCreation: 'cacheCreationTokens' } as const)[row.kind as 'input' | 'output' | 'cacheRead' | 'cacheCreation']
+        if (field) slice.metricTokens[field] = (slice.metricTokens[field] || 0) + row.value
+      } else if (row.name === 'claude_code.active_time.total') {
+        if (row.kind === 'user') slice.activeUserSeconds = (slice.activeUserSeconds || 0) + row.value
+        if (row.kind === 'cli') slice.activeCliSeconds = (slice.activeCliSeconds || 0) + row.value
+      } else if (row.name === 'claude_code.cost.usage') {
+        slice.estimatedCostUsd = (slice.estimatedCostUsd || 0) + row.value
+      }
+    }
+    for (const row of events) {
+      if (!included(row)) continue
+      const slice = get(row)
+      if (row.name === 'user_prompt') slice.prompts += 1
+      if (row.name !== 'api_request') continue
+      slice.apiRequests += 1
+      slice.inputTokens += row.input_tokens || 0
+      slice.outputTokens += row.output_tokens || 0
+      slice.cacheReadTokens += row.cache_read_tokens || 0
+      slice.cacheCreationTokens += row.cache_creation_tokens || 0
+      if (row.cost_usd !== null) { slice.eventCostUsd += row.cost_usd; slice.eventCostSeen = true }
+    }
+    const accounts = new Map<string, {
+      email: string; sessions: Set<string>; projects: Set<string>; prompts: number; apiRequests: number
+      inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number
+      activeUserSeconds: number | null; activeCliSeconds: number | null; estimatedCostUsd: number | null
+      missingCostSlices: number; firstSeen: number; lastSeen: number
+    }>()
+    for (const slice of slices.values()) {
+      let account = accounts.get(slice.email)
+      if (!account) {
+        account = { email: slice.email, sessions: new Set(), projects: new Set(), prompts: 0, apiRequests: 0,
+          inputTokens: 0, outputTokens: 0, cacheReadTokens: 0, cacheCreationTokens: 0,
+          activeUserSeconds: null, activeCliSeconds: null, estimatedCostUsd: null,
+          missingCostSlices: 0, firstSeen: slice.firstSeen, lastSeen: slice.lastSeen }
+        accounts.set(slice.email, account)
+      }
+      account.sessions.add(slice.sessionId)
+      account.projects.add(slice.project)
+      account.prompts += slice.prompts
+      account.apiRequests += slice.apiRequests
+      for (const field of ['inputTokens', 'outputTokens', 'cacheReadTokens', 'cacheCreationTokens'] as const) {
+        account[field] += slice.apiRequests ? slice[field] : slice.metricTokens[field] || 0
+      }
+      for (const field of ['activeUserSeconds', 'activeCliSeconds'] as const) {
+        if (slice[field] !== null) account[field] = (account[field] || 0) + slice[field]
+      }
+      const sliceCost = slice.estimatedCostUsd ?? (slice.eventCostSeen ? slice.eventCostUsd : null)
+      if (sliceCost === null) account.missingCostSlices += 1
+      else account.estimatedCostUsd = (account.estimatedCostUsd || 0) + sliceCost
+      account.firstSeen = Math.min(account.firstSeen, slice.firstSeen)
+      account.lastSeen = Math.max(account.lastSeen, slice.lastSeen)
+    }
+    return { accounts: [...accounts.values()].map(({ sessions, projects, ...account }) => ({
+      ...account, sessions: sessions.size, projects: [...projects].sort(),
+    })).sort((a, b) => (b.estimatedCostUsd || 0) - (a.estimatedCostUsd || 0) || a.email.localeCompare(b.email)) }
   }
 
   sessionEvents(sessionId: string, window: TimeWindow, offset = 0, limit = 50) {

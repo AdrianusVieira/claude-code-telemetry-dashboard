@@ -222,6 +222,20 @@ h3 { margin: 0 0 12px; font-size: 12px; letter-spacing: 0.12em; text-transform: 
 .picker-all { border: 0; background: none; text-align: left; }
 .stats { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .sessions-panel { min-height: 340px; }
+.account-note { margin: 0 0 15px; color: var(--color-text-muted); font-size: 11px; line-height: 1.6; }
+.account-list { display: grid; gap: 15px; }
+.account-card { min-height: 0; padding: 18px; }
+.account-card-head { display: flex; align-items: flex-end; justify-content: space-between; gap: 12px; }
+.account-card-head h2 { font: 20px var(--font-serif); overflow-wrap: anywhere; }
+.account-usage-bar { height: 5px; margin: 17px 0; background: var(--color-border); }
+.account-usage-bar span { display: block; height: 100%; background: var(--color-accent); }
+.account-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 9px; }
+.account-stats .stat { min-height: 90px; padding: 11px 13px; box-shadow: none; background: var(--color-bg); }
+.account-stats .stat strong { font-size: 22px; }
+.account-breakdown { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 9px; margin-top: 14px; }
+.account-breakdown span { display: flex; justify-content: space-between; gap: 6px; color: var(--color-text-muted); font-size: 11px; }
+.account-breakdown strong { color: var(--color-text); font-family: var(--font-mono); }
+.account-projects { margin: 14px 0 0; padding-top: 12px; border-top: 1px solid var(--color-border); color: var(--color-text-muted); font-size: 11px; overflow-wrap: anywhere; }
 .session-row:hover .row-title { color: var(--color-accent); }
 .detail-page-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; margin-bottom: 15px; }
 .detail-page-head .delete-session-button { margin: 0; }
@@ -288,6 +302,7 @@ h3 { margin: 0 0 12px; font-size: 12px; letter-spacing: 0.12em; text-transform: 
 .similar-list li strong { color: var(--color-accent); font: 11px var(--font-mono); }
 .similar-list + .metrics-note { margin-top: 10px; }
 @media (max-width: 600px) { .usage-chart-meta { align-items: flex-start; flex-direction: column; gap: 7px; } }
+@media (max-width: 600px) { .account-stats { grid-template-columns: repeat(2, minmax(0, 1fr)); } .account-breakdown { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
 .detail-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 15px; margin-top: 15px; }
 .detail-card { padding: 19px; overflow: visible; }
 .context-card { margin-bottom: 15px; }

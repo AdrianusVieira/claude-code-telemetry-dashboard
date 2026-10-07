@@ -7,11 +7,18 @@ type TokenPoint = { timestamp: number; input: number; output: number; cacheRead:
 type TokenBar = TokenPoint & { label: string; requestCount: number; context: string }
 type PromptRecord = { id: string; timestamp: number; text: string | null; requests: number; tokens: number; costUsd: number | null }
 type Session = {
-  id: string; title: string; project: string; email: string; firstSeen: number | null; lastSeen: number | null
+  id: string; title: string; project: string; email: string; emails: string[];
+  firstSeen: number | null; lastSeen: number | null
   prompts: number; inputTokens: number; outputTokens: number; cacheReadTokens: number
   cacheCreationTokens: number; activeUserSeconds: number | null; activeCliSeconds: number | null
   estimatedCostUsd: number | null; apiRequests: number; errors: number; models: string[]
   medianRequestMs: number | null; activityCount: number; recentEvents: Event[]; tokenTimeline: TokenPoint[]
+}
+type Account = {
+  email: string; sessions: number; projects: string[]; prompts: number; apiRequests: number
+  inputTokens: number; outputTokens: number; cacheReadTokens: number; cacheCreationTokens: number
+  activeUserSeconds: number | null; activeCliSeconds: number | null
+  estimatedCostUsd: number | null; missingCostSlices: number; firstSeen: number; lastSeen: number
 }
 type Period = 'today' | '7' | '30' | '90' | 'all' | 'custom'
 type DetailSection = 'breakdown' | 'timeline' | 'prompt' | 'request' | 'costDrivers' | 'activity'
@@ -26,6 +33,7 @@ const duration = (seconds: number | null) => seconds == null ? 'Unavailable' : s
 const date = (value: number | null) => value == null ? '—' : new Intl.DateTimeFormat(undefined, { dateStyle: 'medium', timeStyle: 'short' }).format(new Date(value))
 const time = (value: number) => new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' }).format(new Date(value))
 const tokens = (s: Session) => s.inputTokens + s.outputTokens + s.cacheReadTokens + s.cacheCreationTokens
+const accountTokens = (a: Account) => a.inputTokens + a.outputTokens + a.cacheReadTokens + a.cacheCreationTokens
 const pointTokens = (point: TokenPoint) => point.input + point.output + point.cacheRead + point.cacheWrite
 const eventLabels: Record<string, string> = {
   user_prompt: 'Prompt sent', assistant_response: 'Response completed', api_request: 'API request',
@@ -58,6 +66,21 @@ function ChatRow({ session, maxTokens, onClick, onDelete, deleting }: { session:
     <div className="row-meta"><span className="project-pill">{session.project}</span><span>{session.prompts} prompts</span><span>{session.apiRequests} API requests</span></div>
     <div className="row-bottom"><span>{shortCount(tokens(session))} tokens</span><span className="mini-track"><span className="mini-fill" style={{ width: `${Math.max(2, tokens(session) / maxTokens * 100)}%` }} /></span><span aria-hidden="true">→</span></div>
   </button><button className="delete-session-button" type="button" disabled={deleting} onClick={onDelete} aria-label={`Delete session ${session.title}`}>{deleting ? 'Deleting…' : 'Delete'}</button></div>
+}
+
+function AccountCard({ account, maxTokens }: { account: Account; maxTokens: number }) {
+  const total = accountTokens(account)
+  const costValue = account.estimatedCostUsd === null ? 'Unavailable' : cost(account.estimatedCostUsd)
+  const costNote = account.estimatedCostUsd === null ? 'No cost estimate' : account.missingCostSlices ? 'Partial · some activity lacks a cost estimate' : 'Claude Code estimate'
+  const activeValues = [account.activeUserSeconds, account.activeCliSeconds].filter((value): value is number => value !== null)
+  const active = activeValues.length ? duration(activeValues.reduce((sum, value) => sum + value, 0)) : 'Unavailable'
+  return <article className="panel account-card">
+    <div className="account-card-head"><div><p className="eyebrow">CLAUDE ACCOUNT</p><h2>{account.email || 'Unattributed'}</h2></div><span className="count-chip">{account.projects.length} {account.projects.length === 1 ? 'project' : 'projects'}</span></div>
+    <div className="account-usage-bar" role="img" aria-label={`${count(total)} tokens, ${count(maxTokens ? total / maxTokens * 100 : 0)} percent of the largest account`}><span style={{ width: `${maxTokens ? total / maxTokens * 100 : 0}%` }} /></div>
+    <div className="account-stats"><Stat label="Tokens" value={count(total)} hint="Input, output, and cache" /><Stat label="Estimated cost" value={costValue} hint={costNote} /><Stat label="Chats" value={count(account.sessions)} hint="Distinct session IDs" /><Stat label="Prompts" value={count(account.prompts)} hint="User prompt events" /><Stat label="API requests" value={count(account.apiRequests)} hint="Claude API calls" /><Stat label="Active time" value={active} hint="User + Claude processing" /></div>
+    <div className="account-breakdown"><span>Input <strong>{count(account.inputTokens)}</strong></span><span>Output <strong>{count(account.outputTokens)}</strong></span><span>Cache read <strong>{count(account.cacheReadTokens)}</strong></span><span>Cache write <strong>{count(account.cacheCreationTokens)}</strong></span></div>
+    <p className="account-projects">Projects: {account.projects.join(', ')}</p>
+  </article>
 }
 
 function TokenBreakdown({ session }: { session: Session }) {
@@ -276,7 +299,8 @@ function SessionDetail({ session, rangeQuery, onBack, onDelete, deleting }: { se
     ['API errors', count(session.errors)],
   ]
   const context = [
-    ['Models', session.models.join(', ') || 'Unavailable'], ['Account email', session.email || 'Unavailable'],
+    ['Models', session.models.join(', ') || 'Unavailable'],
+    ['Account emails', session.emails.length ? session.emails.join(', ') : 'Unavailable'],
     ['First seen', date(session.firstSeen)], ['Last seen', date(session.lastSeen)],
   ]
   return <>
@@ -306,6 +330,8 @@ export default function App() {
   const [customEnd, setCustomEnd] = useState(() => localDate(new Date()))
   const [selectedProjects, setSelectedProjects] = useState<string[]>([])
   const [sessions, setSessions] = useState<Session[]>([])
+  const [accounts, setAccounts] = useState<Account[]>([])
+  const [refreshKey, setRefreshKey] = useState(0)
   const [route, setRoute] = useState(() => window.location.hash)
   const [sidebarVisible, setSidebarVisible] = useState(() => localStorage.getItem('dashboard-sidebar-visible') !== 'false')
   const [status, setStatus] = useState('Waiting for telemetry…')
@@ -320,16 +346,25 @@ export default function App() {
       : `days=${period}`
   useEffect(() => { const handler = () => setRoute(window.location.hash); window.addEventListener('hashchange', handler); return () => window.removeEventListener('hashchange', handler) }, [])
   useEffect(() => {
-    if (!rangeQuery) { setSessions([]); setStatus('Choose a valid date range.'); return }
+    if (!rangeQuery) { setSessions([]); setAccounts([]); setStatus('Choose a valid date range.'); return }
     let alive = true
     const refresh = async () => {
       try {
         const query = period === 'today' ? `from=${dayStart(localDate(new Date()))}&to=${nextDay(localDate(new Date()))}` : rangeQuery
-        const response = await fetch(`/api/sessions?${query}`, { cache: 'no-store' })
-        if (!response.ok) throw new Error(`HTTP ${response.status}`)
-        const data: { sessions: Session[] } = await response.json()
+        const accountQuery = new URLSearchParams(query)
+        for (const project of selectedProjects) accountQuery.append('project', project)
+        const [response, accountResponse] = await Promise.all([
+          fetch(`/api/sessions?${query}`, { cache: 'no-store' }),
+          fetch(`/api/accounts?${accountQuery}`, { cache: 'no-store' }),
+        ])
+        if (!response.ok || !accountResponse.ok) throw new Error(`HTTP ${!response.ok ? response.status : accountResponse.status}`)
+        const [data, accountData] = await Promise.all([
+          response.json() as Promise<{ sessions: Session[] }>,
+          accountResponse.json() as Promise<{ accounts: Account[] }>,
+        ])
         if (!alive) return
         setSessions(data.sessions.filter((session) => !deletedIds.current.has(session.id)))
+        setAccounts(accountData.accounts)
         setStatus(data.sessions.length ? `Updated ${new Intl.DateTimeFormat(undefined, { timeStyle: 'medium' }).format(new Date())}` : 'Receiver ready. Waiting for Claude Code telemetry.')
         setError(false)
       } catch (reason) {
@@ -341,11 +376,12 @@ export default function App() {
     void refresh()
     const timer = window.setInterval(() => void refresh(), 10_000)
     return () => { alive = false; window.clearInterval(timer) }
-  }, [period, rangeQuery])
+  }, [period, rangeQuery, selectedProjects, refreshKey])
   const projects = useMemo(() => [...new Set(sessions.map((s) => s.project))].sort(), [sessions])
   const filtered = useMemo(() => sessions.filter((s) => !selectedProjects.length || selectedProjects.includes(s.project)), [sessions, selectedProjects])
   const selectedId = route.startsWith('#/session/') ? decodeURIComponent(route.slice('#/session/'.length)) : null
   const sessionsView = route === '#/sessions'
+  const accountsView = route === '#/accounts'
   const selected = selectedId ? sessions.find((s) => s.id === selectedId) : undefined
   const navigate = (path = '') => { window.location.hash = path; setRoute(window.location.hash); window.scrollTo(0, 0) }
   const deleteSession = async (session: Session) => {
@@ -356,6 +392,7 @@ export default function App() {
       if (!response.ok) throw new Error(`HTTP ${response.status}`)
       deletedIds.current.add(session.id)
       setSessions((current) => current.filter((item) => item.id !== session.id))
+      setRefreshKey((value) => value + 1)
       if (selectedId === session.id) navigate('/sessions')
       setStatus(`Deleted ${session.title}.`)
       setError(false)
@@ -373,6 +410,7 @@ export default function App() {
   const costHint = !estimatedCosts.length ? 'No cost estimates' : missingCostCount
     ? `Partial · ${missingCostCount} ${missingCostCount === 1 ? 'chat' : 'chats'} unavailable` : 'Claude Code estimate'
   const maxTokens = Math.max(1, ...filtered.map(tokens))
+  const maxAccountTokens = Math.max(1, ...accounts.map(accountTokens))
   const overviewPoints = useMemo(() => filtered.flatMap((session) => session.tokenTimeline).sort((a, b) => a.timestamp - b.timestamp), [filtered])
   const overviewPromptGroups = useMemo(() => {
     const groups = new Map<string, { id: string; text: null; requests: number; tokens: number }>()
@@ -389,7 +427,7 @@ export default function App() {
   return <div className="app-shell">
     {sidebarVisible && <aside className="sidebar" aria-label="Dashboard navigation">
       <div className="brand">Claude<span>telemetry</span></div>
-      <div className="sidebar-group"><div className="group-title">WORKSPACE</div><button className={`nav-item${!sessionsView && !selectedId ? ' active' : ''}`} type="button" onClick={() => navigate()}>Dashboard</button><button className={`nav-item${sessionsView || selectedId ? ' active' : ''}`} type="button" onClick={() => navigate('/sessions')}>Sessions</button></div>
+      <div className="sidebar-group"><div className="group-title">WORKSPACE</div><button className={`nav-item${!sessionsView && !accountsView && !selectedId ? ' active' : ''}`} type="button" onClick={() => navigate()}>Dashboard</button><button className={`nav-item${sessionsView || selectedId ? ' active' : ''}`} type="button" onClick={() => navigate('/sessions')}>Sessions</button><button className={`nav-item${accountsView ? ' active' : ''}`} type="button" onClick={() => navigate('/accounts')}>Accounts</button></div>
       <div className="sidebar-footer"><div className="receiver-label"><span className="live-dot" aria-hidden="true" />Local receiver</div>
         <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}><span className="theme-symbol" aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>{theme === 'dark' ? 'Light' : 'Dark'} mode</button>
         <button className="theme-toggle" type="button" onClick={toggleSidebar}>◧ Hide sidebar</button>
@@ -398,11 +436,13 @@ export default function App() {
     <main className="main-area"><div className="page-content">
       <div className="top-actions">{!sidebarVisible && <><button type="button" className="plain-button" onClick={toggleSidebar}>☰ Show sidebar</button><button type="button" className="plain-button" onClick={toggleTheme}>{theme === 'dark' ? '☀ Light' : '☾ Dark'} mode</button></>}<span className="top-spacer" /><span className={`status${error ? ' error' : ''}`} role="status">{status}</span></div>
       {selectedId ? <><div className="detail-filters filters"><PeriodPicker period={period} onPeriodChange={setPeriod} customStart={customStart} onStartChange={setCustomStart} customEnd={customEnd} onEndChange={setCustomEnd} /></div>{selected && rangeQuery ? <SessionDetail key={selected.id} session={selected} rangeQuery={rangeQuery} onBack={() => navigate('/sessions')} onDelete={() => void deleteSession(selected)} deleting={deletingSessionId === selected.id} /> : <div className="panel missing-session"><h1>Session unavailable</h1><p>This chat may be outside the current time period.</p><button className="text-button" type="button" onClick={() => navigate('/sessions')}>Back to sessions</button></div>}</> : <>
-        <div className="page-head"><div><p className="eyebrow">CLAUDE CODE / USAGE</p><h1>{sessionsView ? 'Sessions' : 'Dashboard'}</h1><p className="subtitle">{sessionsView ? 'Browse chats across your projects.' : 'Usage totals and analysis across your chats.'}</p></div><div className="filters">
+        <div className="page-head"><div><p className="eyebrow">CLAUDE CODE / USAGE</p><h1>{accountsView ? 'Accounts' : sessionsView ? 'Sessions' : 'Dashboard'}</h1><p className="subtitle">{accountsView ? 'Usage attributed to each Claude account email.' : sessionsView ? 'Browse chats across your projects.' : 'Usage totals and analysis across your chats.'}</p></div><div className="filters">
           <ProjectPicker projects={projects} selected={selectedProjects} onChange={setSelectedProjects} />
           <PeriodPicker period={period} onPeriodChange={setPeriod} customStart={customStart} onStartChange={setCustomStart} customEnd={customEnd} onEndChange={setCustomEnd} />
         </div></div>
-        {!sessionsView ? <>
+        {accountsView ? <section aria-label="Account usage"><p className="account-note">Usage is grouped by the <code>user.email</code> on each telemetry record. A chat used with multiple accounts appears in each account’s chat count; its usage is split by record. Records without an email appear as Unattributed.</p>
+          {accounts.length ? <div className="account-list">{accounts.map((account) => <AccountCard key={account.email} account={account} maxTokens={maxAccountTokens} />)}</div> : <div className="panel empty-state"><span className="empty-icon" aria-hidden="true">↗</span><h3>No account usage in this view</h3><p>Try another project or period, or send a prompt from Claude Code.</p></div>}
+        </section> : !sessionsView ? <>
         <section className="stats" aria-label="Summary"><Stat label="Chats" value={count(filtered.length)} hint="Distinct session IDs" /><Stat label="Prompts sent" value={count(filtered.reduce((sum, s) => sum + s.prompts, 0))} hint="User prompt events" /><Stat label="Tokens" value={shortCount(filtered.reduce((sum, s) => sum + tokens(s), 0))} hint="Input, output, and cache" /><Stat label="Estimated cost" value={totalCost} hint={costHint} /><Stat label="Active time" value={active} hint="User + Claude processing" /><Stat label="Avg tokens / request" value={overviewUsage.requestAverage === null ? 'Unavailable' : count(overviewUsage.requestAverage)} hint={`${overviewUsage.requestCount} API requests`} /><Stat label="Avg tokens / prompt" value={overviewUsage.promptAverage === null ? 'Unavailable' : count(overviewUsage.promptAverage)} hint={`${overviewUsage.linkedPromptCount} prompt groups with request IDs`} /></section>
         <section className="panel chart-panel overview-chart" aria-labelledby="overview-chart-heading"><div className="panel-head"><div><p className="eyebrow">USAGE OVER TIME</p><h2 id="overview-chart-heading">Token timeline</h2></div><span className="count-chip">{overviewPoints.length} API requests across {filtered.length} {filtered.length === 1 ? 'chat' : 'chats'}</span></div><div className="chart-body"><TokenTimeline points={overviewPoints} /></div></section>
         <button className="plain-button" type="button" onClick={() => navigate('/sessions')}>Browse {filtered.length} {filtered.length === 1 ? 'chat' : 'chats'} →</button>
