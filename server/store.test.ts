@@ -53,6 +53,59 @@ test('aggregates metrics and events by chat without counting duplicate exports',
     assert.equal(result.estimatedCostUsd, 0.02)
     assert.equal(result.project, 'project-a')
     assert.equal(result.email, 'me@example.com')
+    assert.deepEqual(result.emails, ['me@example.com'])
+  } finally { f.close() }
+})
+
+test('retains both account emails when one chat changes accounts', () => {
+  const f = fixture()
+  try {
+    const first = log('user_prompt', { 'prompt.id': 'first' })
+    first.resourceLogs[0].scopeLogs[0].logRecords[0].timeUnixNano = String((Date.now() - 2000) * 1_000_000)
+    const second = log('api_request', { 'prompt.id': 'second' })
+    second.resourceLogs[0].resource.attributes = attrs({ 'project.id': 'project-a', 'user.email': 'other@example.com' })
+    second.resourceLogs[0].scopeLogs[0].logRecords[0].timeUnixNano = String((Date.now() - 1000) * 1_000_000)
+    f.store.ingestLogs(second)
+    f.store.ingestLogs(first)
+
+    const session = f.store.sessions().sessions[0]
+    assert.deepEqual(session.emails, ['me@example.com', 'other@example.com'])
+    assert.equal(session.email, 'other@example.com')
+    assert.equal(session.prompts, 1)
+    assert.equal(session.apiRequests, 1)
+  } finally { f.close() }
+})
+
+test('attributes usage by account record, including mixed chats and missing emails', () => {
+  const f = fixture()
+  try {
+    f.store.ingestLogs(log('api_request', { input_tokens: 10, output_tokens: 2, cost_usd: 0.04 }))
+    f.store.ingestMetrics(metric('claude_code.token.usage', 10, 'input'))
+    f.store.ingestMetrics(metric('claude_code.cost.usage', 0.03))
+    const other = log('api_request', { input_tokens: 7, cache_read_tokens: 3, cost_usd: 0.02 })
+    other.resourceLogs[0].resource.attributes = attrs({ 'project.id': 'project-a', 'user.email': 'other@example.com' })
+    f.store.ingestLogs(other)
+    const missing = log('user_prompt', { 'prompt.id': 'missing-email' })
+    missing.resourceLogs[0].resource.attributes = attrs({ 'project.id': 'project-b' })
+    f.store.ingestLogs(missing)
+    const result = f.store.accounts(null).accounts
+    const first = result.find((account) => account.email === 'me@example.com')!
+    const second = result.find((account) => account.email === 'other@example.com')!
+    const unattributed = result.find((account) => account.email === '')!
+    assert.equal(first.sessions, 1)
+    assert.equal(first.inputTokens, 10)
+    assert.equal(first.outputTokens, 2)
+    assert.equal(first.estimatedCostUsd, 0.03)
+    assert.equal(second.sessions, 1)
+    assert.equal(second.inputTokens, 7)
+    assert.equal(second.cacheReadTokens, 3)
+    assert.equal(second.estimatedCostUsd, 0.02)
+    assert.equal(unattributed.prompts, 1)
+    assert.equal(unattributed.estimatedCostUsd, null)
+    assert.deepEqual(f.store.accounts(null, ['project-a']).accounts.map((account) => account.email).sort(), ['me@example.com', 'other@example.com'])
+    assert.equal(f.store.accounts(null, ['project-b']).accounts.length, 1)
+    assert.equal(f.store.deleteSession('session-1'), true)
+    assert.deepEqual(f.store.accounts(null).accounts, [])
   } finally { f.close() }
 })
 

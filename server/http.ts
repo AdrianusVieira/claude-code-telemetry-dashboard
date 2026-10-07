@@ -146,6 +146,12 @@ export function createServers(store: Store, distDir: string): { otlp: Server; da
         console.error('Dashboard query failed:', error); json(response, { error: 'Internal error' }, 500) }
       return
     }
+    if (url.pathname === '/api/accounts') {
+      try { json(response, store.accounts(timeWindow(url), url.searchParams.getAll('project'))) }
+      catch (error) { if (error instanceof HttpError) { json(response, { error: error.message }, error.status); return }
+        console.error('Account query failed:', error); json(response, { error: 'Internal error' }, 500) }
+      return
+    }
     const promptsMatch = /^\/api\/sessions\/([^/]+)\/prompts$/.exec(url.pathname)
     if (promptsMatch) {
       try {
