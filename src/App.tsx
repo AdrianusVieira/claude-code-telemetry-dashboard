@@ -1,6 +1,7 @@
-import { useEffect, useMemo, useRef, useState } from 'react'
+import { lazy, Suspense, useEffect, useMemo, useRef, useState } from 'react'
 import { useTheme } from './useTheme'
 import { summarizeUsage } from './usageMetrics'
+const OfficeView = lazy(() => import('./OfficeView'))
 
 type Event = { name: string; timestamp: number; durationMs: number | null; toolName: string; success: string }
 type TokenPoint = { timestamp: number; input: number; output: number; cacheRead: number; cacheWrite: number; promptId: string }
@@ -382,6 +383,7 @@ export default function App() {
   const selectedId = route.startsWith('#/session/') ? decodeURIComponent(route.slice('#/session/'.length)) : null
   const sessionsView = route === '#/sessions'
   const accountsView = route === '#/accounts'
+  const officeView = route === '#/office'
   const selected = selectedId ? sessions.find((s) => s.id === selectedId) : undefined
   const navigate = (path = '') => { window.location.hash = path; setRoute(window.location.hash); window.scrollTo(0, 0) }
   const deleteSession = async (session: Session) => {
@@ -427,7 +429,7 @@ export default function App() {
   return <div className="app-shell">
     {sidebarVisible && <aside className="sidebar" aria-label="Dashboard navigation">
       <div className="brand">Claude<span>telemetry</span></div>
-      <div className="sidebar-group"><div className="group-title">WORKSPACE</div><button className={`nav-item${!sessionsView && !accountsView && !selectedId ? ' active' : ''}`} type="button" onClick={() => navigate()}>Dashboard</button><button className={`nav-item${sessionsView || selectedId ? ' active' : ''}`} type="button" onClick={() => navigate('/sessions')}>Sessions</button><button className={`nav-item${accountsView ? ' active' : ''}`} type="button" onClick={() => navigate('/accounts')}>Accounts</button></div>
+      <div className="sidebar-group"><div className="group-title">WORKSPACE</div><button className={`nav-item${!sessionsView && !accountsView && !officeView && !selectedId ? ' active' : ''}`} type="button" onClick={() => navigate()}>Dashboard</button><button className={`nav-item${officeView ? ' active' : ''}`} type="button" onClick={() => navigate('/office')}>Office</button><button className={`nav-item${sessionsView || selectedId ? ' active' : ''}`} type="button" onClick={() => navigate('/sessions')}>Sessions</button><button className={`nav-item${accountsView ? ' active' : ''}`} type="button" onClick={() => navigate('/accounts')}>Accounts</button></div>
       <div className="sidebar-footer"><div className="receiver-label"><span className="live-dot" aria-hidden="true" />Local receiver</div>
         <button className="theme-toggle" type="button" onClick={toggleTheme} aria-label={`Switch to ${theme === 'dark' ? 'light' : 'dark'} mode`}><span className="theme-symbol" aria-hidden="true">{theme === 'dark' ? '☀' : '☾'}</span>{theme === 'dark' ? 'Light' : 'Dark'} mode</button>
         <button className="theme-toggle" type="button" onClick={toggleSidebar}>◧ Hide sidebar</button>
@@ -436,6 +438,7 @@ export default function App() {
     <main className="main-area"><div className="page-content">
       <div className="top-actions">{!sidebarVisible && <><button type="button" className="plain-button" onClick={toggleSidebar}>☰ Show sidebar</button><button type="button" className="plain-button" onClick={toggleTheme}>{theme === 'dark' ? '☀ Light' : '☾ Dark'} mode</button></>}<span className="top-spacer" /><span className={`status${error ? ' error' : ''}`} role="status">{status}</span></div>
       {selectedId ? <><div className="detail-filters filters"><PeriodPicker period={period} onPeriodChange={setPeriod} customStart={customStart} onStartChange={setCustomStart} customEnd={customEnd} onEndChange={setCustomEnd} /></div>{selected && rangeQuery ? <SessionDetail key={selected.id} session={selected} rangeQuery={rangeQuery} onBack={() => navigate('/sessions')} onDelete={() => void deleteSession(selected)} deleting={deletingSessionId === selected.id} /> : <div className="panel missing-session"><h1>Session unavailable</h1><p>This chat may be outside the current time period.</p><button className="text-button" type="button" onClick={() => navigate('/sessions')}>Back to sessions</button></div>}</> : <>
+        {officeView ? <><div className="office-filter-row filters"><ProjectPicker projects={projects} selected={selectedProjects} onChange={setSelectedProjects} /><PeriodPicker period={period} onPeriodChange={setPeriod} customStart={customStart} onStartChange={setCustomStart} customEnd={customEnd} onEndChange={setCustomEnd} /></div><Suspense fallback={<div className="panel empty-state">Loading office…</div>}><OfficeView sessions={filtered} onOpenSession={(id) => navigate(`/session/${encodeURIComponent(id)}`)} /></Suspense></> : <>
         <div className="page-head"><div><p className="eyebrow">CLAUDE CODE / USAGE</p><h1>{accountsView ? 'Accounts' : sessionsView ? 'Sessions' : 'Dashboard'}</h1><p className="subtitle">{accountsView ? 'Usage attributed to each Claude account email.' : sessionsView ? 'Browse chats across your projects.' : 'Usage totals and analysis across your chats.'}</p></div><div className="filters">
           <ProjectPicker projects={projects} selected={selectedProjects} onChange={setSelectedProjects} />
           <PeriodPicker period={period} onPeriodChange={setPeriod} customStart={customStart} onStartChange={setCustomStart} customEnd={customEnd} onEndChange={setCustomEnd} />
@@ -449,7 +452,7 @@ export default function App() {
         </> :
         <section className="panel sessions-panel" aria-labelledby="chats-heading"><div className="panel-head"><div><p className="eyebrow">ACTIVITY</p><h2 id="chats-heading">Chats</h2></div><span className="count-chip">{filtered.length} {filtered.length === 1 ? 'chat' : 'chats'}</span></div>
           {filtered.length ? <div className="session-list">{filtered.map((session) => <ChatRow key={session.id} session={session} maxTokens={maxTokens} onClick={() => navigate(`/session/${encodeURIComponent(session.id)}`)} onDelete={() => void deleteSession(session)} deleting={deletingSessionId === session.id} />)}</div> : <div className="empty-state"><span className="empty-icon" aria-hidden="true">↗</span><h3>No chats in this view</h3><p>Try another project or period, or send a prompt from a new Claude Code chat.</p></div>}
-        </section>}
+        </section>}</>}
       </>}
       <footer className="footnote"><span>Chats count distinct IDs. Cost is Claude Code's estimate.</span><span>Created by @AdrianusVieira</span></footer>
     </div></main>
