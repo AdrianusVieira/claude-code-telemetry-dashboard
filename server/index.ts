@@ -9,7 +9,7 @@ import { TitleScanner } from './titles.js'
 
 const root = resolve(fileURLToPath(new URL('..', import.meta.url)))
 const { values } = parseArgs({ options: {
-  'dashboard-port': { type: 'string', default: '41300' },
+  'dashboard-port': { type: 'string', default: '3000' },
   'otlp-port': { type: 'string', default: '4318' },
   db: { type: 'string', default: join(root, 'data', 'telemetry.sqlite3') },
   'claude-dir': { type: 'string', default: join(homedir(), '.claude') },
