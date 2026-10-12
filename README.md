@@ -13,11 +13,11 @@ npm install
 npm start
 ```
 
-Open [http://127.0.0.1:3000](http://127.0.0.1:3000). The OTLP receiver listens on `http://127.0.0.1:4318` at `/v1/metrics` and `/v1/logs`. Both listeners bind only to loopback. The SQLite database is created at `data/telemetry.sqlite3` and is ignored by Git.
+Open [http://127.0.0.1:41300](http://127.0.0.1:41300). The OTLP receiver listens on `http://127.0.0.1:4318` at `/v1/metrics` and `/v1/logs`. Both listeners bind only to loopback. The SQLite database is created at `data/telemetry.sqlite3` and is ignored by Git.
 
-`npm start` builds the React UI, then starts both local listeners. The same SQLite database path (`data/telemetry.sqlite3`) works with the earlier Python prototype; existing local data is preserved except for old `claude_code.session.count` rows, which are removed when the receiver starts. Future session count metrics are ignored. To change a port or path after building, use `npm run server -- --dashboard-port 3001 --otlp-port 4319 --db data/telemetry.sqlite3`. Use `--claude-dir` to point chat title discovery at another Claude data directory.
+`npm start` builds the React UI, then starts both local listeners. The same SQLite database path (`data/telemetry.sqlite3`) works with the earlier Python prototype; existing local data is preserved except for old `claude_code.session.count` rows, which are removed when the receiver starts. Future session count metrics are ignored. To change a port or path after building, use `npm run server -- --dashboard-port 41301 --otlp-port 4319 --db data/telemetry.sqlite3`. Use `--claude-dir` to point chat title discovery at another Claude data directory.
 
-For development, run `npm run dev` and open `http://127.0.0.1:5173`. This starts Vite and the TypeScript receiver together. Vite proxies `/api` to the local receiver. After UI edits, `npm start` rebuilds the page served on port 3000.
+For development, run `npm run dev` and open `http://127.0.0.1:5173`. This starts Vite and the TypeScript receiver together. Vite proxies `/api` to the local receiver. After UI edits, `npm start` rebuilds the page served on port 41300.
 
 ## Connect one project
 
